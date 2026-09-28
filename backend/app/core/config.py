@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     TESSERACT_CMD: str = "tesseract"
 
     # Document storage
-    UPLOAD_DIR: str = "uploads"
+    UPLOAD_DIR: str = str(BACKEND_DIR / "uploads")
     MAX_UPLOAD_SIZE_MB: int = 20
     ALLOWED_MIME_TYPES: list[str] = [
         "application/pdf",
@@ -66,7 +66,7 @@ class Settings(BaseSettings):
     RAG_TOP_K: int = 5
 
     # Chat session DB
-    SESSION_DB_PATH: str = "sessions.db"
+    SESSION_DB_PATH: str = str(BACKEND_DIR / "sessions.db")
 
 
 settings = Settings()
