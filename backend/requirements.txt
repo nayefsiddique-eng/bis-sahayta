@@ -1,0 +1,43 @@
+# Core framework
+fastapi>=0.100.0
+uvicorn>=0.22.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-multipart>=0.0.6
+
+# HTTP client
+httpx>=0.24.0
+
+# Rate limiting
+slowapi>=0.1.9
+limits>=3.6.0
+
+# Caching / Async Redis (with fallback for no-Redis environments)
+redis>=5.0.0
+
+# Task queue
+celery>=5.3.0
+
+# LLM providers
+google-generativeai>=0.7.0
+
+# RAG / Embeddings / Vector store
+sentence-transformers>=2.2.0
+faiss-cpu>=1.7.4
+
+# Document processing / OCR
+PyMuPDF>=1.23.0
+Pillow>=10.0.0
+pytesseract>=0.3.10
+
+# Audio / voice (TTS/STT placeholder; real Bhashini via httpx)
+pydub>=0.25.1
+
+# Utilities
+python-dotenv>=1.0.0
+aiofiles>=23.2.1
+
+# Testing
+pytest>=7.3.0
+pytest-asyncio>=0.23.0
+httpx>=0.24.0
