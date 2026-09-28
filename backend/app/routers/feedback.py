@@ -1,13 +1,14 @@
 import json
 import uuid
 import datetime
+import os
 from pathlib import Path
 from fastapi import APIRouter
 from app.schemas.feedback import FeedbackRequest, FeedbackResponse
 
 router = APIRouter(tags=["feedback"])
 
-LOG_FILE = Path(__file__).parent.parent / "data" / "feedback_log.json"
+LOG_FILE = Path(os.environ.get("FEEDBACK_LOG_PATH", Path(__file__).parent.parent / "data" / "feedback_log.json"))
 
 @router.post("/feedback", response_model=FeedbackResponse)
 def submit_feedback(payload: FeedbackRequest):
