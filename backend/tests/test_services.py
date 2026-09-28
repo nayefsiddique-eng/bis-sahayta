@@ -71,6 +71,15 @@ def test_build_chat_prompt_with_history():
     assert "CONVERSATION HISTORY" in prompt
 
 
+def test_build_chat_prompt_styles():
+    from app.services.llm_service import LLMService
+    prompt_short = LLMService.build_chat_prompt("What is IS 302?", [], [], style="short")
+    prompt_tech = LLMService.build_chat_prompt("What is IS 302?", [], [], style="technical")
+    assert "concise" in prompt_short.lower()
+    assert "technical" in prompt_tech.lower()
+    assert prompt_short != prompt_tech
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # OCR Service
 # ─────────────────────────────────────────────────────────────────────────────

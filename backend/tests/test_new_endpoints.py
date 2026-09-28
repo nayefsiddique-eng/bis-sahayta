@@ -400,3 +400,26 @@ def test_document_scan_rejects_path_traversal():
         headers=AUTH,
     )
     assert resp.status_code == 400
+
+
+def test_get_sessions_list_shape_and_order():
+    resp = client.get("/sessions", headers=AUTH)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert isinstance(data, list)
+    if len(data) >= 2:
+        assert data[0]["updated_at"] >= data[1]["updated_at"]
+
+
+def test_chat_relevance_field_and_api_alias():
+    payload = {"message": "What is IS 302?"}
+    resp = client.post("/api/chat", json=payload, headers=AUTH)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "relevance" in data
+
+
+def test_chat_style_validation():
+    payload = {"message": "Tell me about BIS", "style": "invalid_style_xyz"}
+    resp = client.post("/api/chat", json=payload, headers=AUTH)
+    assert resp.status_code == 422
