@@ -11,12 +11,11 @@ from unittest.mock import patch, AsyncMock
 # LLM Service
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_mock_provider_returns_string():
+@pytest.mark.asyncio
+async def test_mock_provider_returns_string():
     from app.services.llm_service import MockProvider
     provider = MockProvider()
-    result = asyncio.get_event_loop().run_until_complete(
-        provider.complete("What is BIS?")
-    )
+    result = await provider.complete("What is BIS?")
     assert isinstance(result, str)
     assert len(result) > 0
     assert "[MockLLM]" in result
@@ -37,11 +36,10 @@ def test_get_llm_provider_mock_default(monkeypatch):
     llm_mod._provider_instance = None  # cleanup
 
 
-def test_llm_service_complete_with_mock():
+@pytest.mark.asyncio
+async def test_llm_service_complete_with_mock():
     from app.services.llm_service import LLMService, MockProvider
-    result = asyncio.get_event_loop().run_until_complete(
-        LLMService.complete("Tell me about IS 2082", provider=MockProvider())
-    )
+    result = await LLMService.complete("Tell me about IS 2082", provider=MockProvider())
     assert isinstance(result, str)
     assert len(result) > 10
 
@@ -84,37 +82,34 @@ def test_build_chat_prompt_styles():
 # OCR Service
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_mock_ocr_provider():
+@pytest.mark.asyncio
+async def test_mock_ocr_provider():
     from app.services.ocr_service import MockOCRProvider
     provider = MockOCRProvider()
-    text = asyncio.get_event_loop().run_until_complete(
-        provider.extract_text(b"fake-image-bytes", lang="eng")
-    )
+    text = await provider.extract_text(b"fake-image-bytes", lang="eng")
     assert isinstance(text, str)
     assert "[MockOCR]" in text
 
 
-def test_ocr_service_image():
+@pytest.mark.asyncio
+async def test_ocr_service_image():
     from app.services.ocr_service import OCRService, MockOCRProvider
     # Force mock provider
     import app.services.ocr_service as ocr_mod
     ocr_mod._ocr_provider = MockOCRProvider()
-    result = asyncio.get_event_loop().run_until_complete(
-        OCRService.extract_text(b"image-bytes", mime_type="image/jpeg")
-    )
+    result = await OCRService.extract_text(b"image-bytes", mime_type="image/jpeg")
     assert isinstance(result, str)
     ocr_mod._ocr_provider = None  # cleanup
 
 
-def test_ocr_service_pdf_fallback_to_ocr():
+@pytest.mark.asyncio
+async def test_ocr_service_pdf_fallback_to_ocr():
     """When PDF has no embedded text, should fall back to OCR (mock returns placeholder)."""
     from app.services.ocr_service import OCRService, MockOCRProvider
     import app.services.ocr_service as ocr_mod
     ocr_mod._ocr_provider = MockOCRProvider()
     # Pass a short byte string that is NOT a valid PDF (so extract_text_from_pdf returns "")
-    result = asyncio.get_event_loop().run_until_complete(
-        OCRService.extract_text(b"not-a-real-pdf", mime_type="application/pdf")
-    )
+    result = await OCRService.extract_text(b"not-a-real-pdf", mime_type="application/pdf")
     # Should fall through to OCR and return mock text
     assert isinstance(result, str)
     ocr_mod._ocr_provider = None
@@ -209,12 +204,11 @@ def test_get_history_as_pairs():
 # Flashcard Service
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_flashcard_generation_mock():
+@pytest.mark.asyncio
+async def test_flashcard_generation_mock():
     from app.services.flashcard_service import generate_flashcards
     from app.services.llm_service import MockProvider
-    cards = asyncio.get_event_loop().run_until_complete(
-        generate_flashcards("BIS certification for toys", num_cards=5, provider=MockProvider())
-    )
+    cards = await generate_flashcards("BIS certification for toys", num_cards=5, provider=MockProvider())
     assert isinstance(cards, list)
     assert len(cards) >= 1
     for card in cards:
@@ -222,13 +216,12 @@ def test_flashcard_generation_mock():
         assert "answer" in card
 
 
-def test_flashcard_respects_num_cards_cap():
+@pytest.mark.asyncio
+async def test_flashcard_respects_num_cards_cap():
     from app.services.flashcard_service import generate_flashcards
     from app.services.llm_service import MockProvider
     # Request more than 20 — service should cap internally
-    cards = asyncio.get_event_loop().run_until_complete(
-        generate_flashcards("BIS", num_cards=25, provider=MockProvider())
-    )
+    cards = await generate_flashcards("BIS", num_cards=25, provider=MockProvider())
     assert isinstance(cards, list)
     assert len(cards) <= 20
 
