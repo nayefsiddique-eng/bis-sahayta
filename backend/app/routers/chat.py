@@ -172,8 +172,7 @@ async def chat(body: ChatRequest):
     if session_id:
         session = get_session(session_id)
         if not session:
-            session = create_session()
-            session_id = session["session_id"]
+            raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found.")
     else:
         session = create_session()
         session_id = session["session_id"]
