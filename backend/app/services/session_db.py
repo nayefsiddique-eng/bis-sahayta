@@ -211,3 +211,17 @@ def get_history_as_pairs(session_id: str, n_turns: int = 6) -> list[dict]:
             pair = {}
     return pairs
 
+
+def get_first_user_message(session_id: str) -> Optional[str]:
+    """Return the content of the very first user message in a session."""
+    with _lock:
+        conn = _get_conn()
+        try:
+            row = conn.execute(
+                "SELECT content FROM messages WHERE session_id=? AND role='user' ORDER BY id ASC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+    return row["content"] if row else None
+

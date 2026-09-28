@@ -24,6 +24,7 @@ from app.services.session_db import (
     get_history_as_pairs,
     update_session_context,
     list_sessions,
+    get_first_user_message,
 )
 from app.services.translation import translate_text, BhashiniUnavailableError
 from app.services.cache_service import get_cache, make_cache_key
@@ -72,7 +73,7 @@ class ChatResponse(BaseModel):
     answer: str  # Frontend alias for reply
     intent: str
     rag_used: bool
-    confidence: Optional[float] = Field(None, description="Top RAG cosine similarity score (0.0 to 1.0) or null")
+    relevance: Optional[float] = Field(None, description="Top RAG cosine similarity score (0.0 to 1.0) or null")
     sources: list[dict] = []
     citations: list[dict] = []  # Frontend alias for sources
     translation_unavailable: bool = False
@@ -91,6 +92,9 @@ class ChatResponse(BaseModel):
                 data["citations"] = data["sources"]
             elif "citations" in data and "sources" not in data:
                 data["sources"] = data["citations"]
+
+            if "confidence" in data and "relevance" not in data:
+                data["relevance"] = data["confidence"]
         return data
 
 
@@ -119,8 +123,8 @@ def get_all_sessions(limit: int = 50):
     res = []
     for s in sessions:
         sid = s["session_id"]
-        messages = get_history(sid, limit=1)
-        preview = messages[0]["content"] if messages else "New Chat"
+        first_msg = get_first_user_message(sid)
+        preview = first_msg if first_msg else "New Chat"
         res.append({
             "id": sid,
             "session_id": sid,
@@ -280,7 +284,7 @@ async def chat(body: ChatRequest):
         answer=reply_final,
         intent=intent.value,
         rag_used=rag_used,
-        confidence=confidence,
+        relevance=confidence,
         sources=formatted_sources,
         citations=formatted_sources,
         translation_unavailable=translation_unavailable,
