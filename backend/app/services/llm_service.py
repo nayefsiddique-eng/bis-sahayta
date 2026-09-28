@@ -11,6 +11,7 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 import httpx
+from fastapi import HTTPException
 
 from app.core.config import settings
 
@@ -45,7 +46,6 @@ class MockProvider(LLMProvider):
 
     async def complete(self, prompt: str, *, system: str = "", max_tokens: int = 1024) -> str:
         logger.debug("MockProvider.complete called (no real LLM)")
-        # Derive a plausible response from the prompt length so tests are deterministic.
         excerpt = prompt[:120].replace("\n", " ")
         return (
             f"[MockLLM] Responding to: \"{excerpt}...\"\n\n"
@@ -66,16 +66,19 @@ class GeminiProvider(LLMProvider):
 
     def __init__(self) -> None:
         if not settings.GEMINI_API_KEY:
-            raise RuntimeError(
-                "GEMINI_API_KEY is not set. Set it in your environment or .env file."
+            raise HTTPException(
+                status_code=502,
+                detail={"error_code": "LLM_CONFIG_ERROR", "message": "GEMINI_API_KEY is not set in environment or backend/.env file."}
             )
         try:
             import google.generativeai as genai  # type: ignore
             genai.configure(api_key=settings.GEMINI_API_KEY)
             self._model = genai.GenerativeModel(settings.GEMINI_MODEL)
         except ImportError as exc:
-            raise RuntimeError(
-                "google-generativeai is not installed. Run: pip install google-generativeai"
+            logger.error(f"google-generativeai package missing: {exc}")
+            raise HTTPException(
+                status_code=502,
+                detail={"error_code": "LLM_DEPENDENCY_ERROR", "message": "google-generativeai package is not installed."}
             ) from exc
 
     async def complete(self, prompt: str, *, system: str = "", max_tokens: int = 1024) -> str:
@@ -95,8 +98,11 @@ class GeminiProvider(LLMProvider):
             )
             return response.text
         except Exception as exc:
-            logger.error(f"GeminiProvider error: {exc}")
-            raise
+            logger.error(f"GeminiProvider API execution error: {exc}")
+            raise HTTPException(
+                status_code=502,
+                detail={"error_code": "LLM_PROVIDER_ERROR", "message": f"Gemini API failure: {str(exc)}"}
+            ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -129,13 +135,17 @@ class OllamaProvider(LLMProvider):
                 data = resp.json()
                 return data.get("response", "")
         except httpx.ConnectError as exc:
-            raise RuntimeError(
-                f"Cannot connect to Ollama at {self._base_url}. "
-                "Make sure Ollama is running: ollama serve"
+            logger.error(f"Ollama connection error: {exc}")
+            raise HTTPException(
+                status_code=502,
+                detail={"error_code": "LLM_PROVIDER_OFFLINE", "message": f"Cannot connect to Ollama at {self._base_url}"}
             ) from exc
         except Exception as exc:
             logger.error(f"OllamaProvider error: {exc}")
-            raise
+            raise HTTPException(
+                status_code=502,
+                detail={"error_code": "LLM_PROVIDER_ERROR", "message": f"Ollama error: {str(exc)}"}
+            ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -175,15 +185,6 @@ class LLMService:
         max_tokens: int = 1024,
         provider: Optional[LLMProvider] = None,
     ) -> str:
-        """
-        Run an LLM completion.
-
-        Args:
-            prompt: User/context prompt.
-            system: Optional system instruction.
-            max_tokens: Maximum tokens to generate.
-            provider: Override the default provider (useful in tests).
-        """
         p = provider or get_llm_provider()
         return await p.complete(prompt, system=system, max_tokens=max_tokens)
 
@@ -211,8 +212,9 @@ class LLMService:
         context_chunks: list[str],
         history: list[dict],
         session_context: str = "",
+        style: str = "simple",
     ) -> str:
-        """Format a prompt for the chat endpoint including conversation history."""
+        """Format a prompt for the chat endpoint including conversation history and style prompt."""
         history_text = ""
         if history:
             lines = []
@@ -221,6 +223,14 @@ class LLMService:
                 lines.append(f"Assistant: {h.get('assistant', '')}")
             history_text = "\n".join(lines)
 
+        style_instruction = ""
+        if style == "short":
+            style_instruction = "Give concise, direct, bulleted answers. Keep responses under 3-4 sentences."
+        elif style == "technical":
+            style_instruction = "Provide a deep technical and regulatory response citing exact clause numbers, testing specs, and formal standards."
+        else:
+            style_instruction = "Explain in plain, clear, accessible language easy to understand for non-experts."
+
         context = "\n\n---\n\n".join(context_chunks) if context_chunks else ""
         ctx_section = f"\nSESSION CONTEXT:\n{session_context}\n" if session_context else ""
         rag_section = f"\nRELEVANT STANDARDS/DOCUMENTS:\n{context}\n" if context else ""
@@ -228,6 +238,7 @@ class LLMService:
 
         return textwrap.dedent(f"""
             You are a knowledgeable BIS Compliance & Standards Assistant.
+            {style_instruction}
             You help users understand Indian standards, QCOs, certification requirements, and compliance.
             Do NOT fabricate standards, regulations, or compliance results.
             {ctx_section}{rag_section}{hist_section}

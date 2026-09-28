@@ -7,7 +7,7 @@ and returns both {reply, sources} and {answer, citations} schema formats.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Optional, Literal
 
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field, model_validator
@@ -23,6 +23,7 @@ from app.services.session_db import (
     get_history,
     get_history_as_pairs,
     update_session_context,
+    list_sessions,
 )
 from app.services.translation import translate_text, BhashiniUnavailableError
 from app.services.cache_service import get_cache, make_cache_key
@@ -41,7 +42,8 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = Field(None, description="Existing session ID. Omit to start a new session.")
     lang: str = Field("en", description="Language code (e.g. 'en', 'hi')")
     use_rag: bool = Field(True, description="Whether to retrieve context from the document store.")
-    n_results: Optional[int] = Field(5, description="Number of RAG results (alias)")
+    n_results: Optional[int] = Field(5, description="Number of RAG results")
+    style: Optional[Literal["simple", "short", "technical"]] = Field("simple", description="Response style mode")
 
     @model_validator(mode="before")
     @classmethod
@@ -55,12 +57,13 @@ class ChatRequest(BaseModel):
         return data
 
 
-class CitationItem(BaseModel):
-    is_number: str = "BIS Standard"
-    doc_type: str = "Standard Document"
-    page_number: str = "1"
-    text: str = ""
-    metadata: dict = Field(default_factory=dict)
+class SourceItem(BaseModel):
+    title: str = Field(..., description="Document title or standard ID")
+    document_id: str = Field(..., description="Unique document ID")
+    clause: str = Field("", description="Clause or section reference")
+    url: str = Field("", description="Document URL if available")
+    snippet: str = Field("", description="Retrieved text snippet")
+    score: Optional[float] = Field(None, description="Cosine similarity score")
 
 
 class ChatResponse(BaseModel):
@@ -69,6 +72,7 @@ class ChatResponse(BaseModel):
     answer: str  # Frontend alias for reply
     intent: str
     rag_used: bool
+    confidence: Optional[float] = Field(None, description="Top RAG cosine similarity score (0.0 to 1.0) or null")
     sources: list[dict] = []
     citations: list[dict] = []  # Frontend alias for sources
     translation_unavailable: bool = False
@@ -108,6 +112,25 @@ def create_new_session(body: SessionCreateRequest = None):
     return session
 
 
+@sessions_router.get("")
+def get_all_sessions(limit: int = 50):
+    """List recent chat sessions (newest first: id, preview, updated_at)."""
+    sessions = list_sessions(limit=limit)
+    res = []
+    for s in sessions:
+        sid = s["session_id"]
+        messages = get_history(sid, limit=1)
+        preview = messages[0]["content"] if messages else "New Chat"
+        res.append({
+            "id": sid,
+            "session_id": sid,
+            "preview": preview,
+            "updated_at": s["updated_at"],
+            "created_at": s["created_at"],
+        })
+    return res
+
+
 @sessions_router.get("/{session_id}")
 def get_session_info(session_id: str):
     session = get_session(session_id)
@@ -145,7 +168,6 @@ async def chat(body: ChatRequest):
     if session_id:
         session = get_session(session_id)
         if not session:
-            # Create session automatically if frontend passed a new session_id that doesn't exist yet
             session = create_session()
             session_id = session["session_id"]
     else:
@@ -170,23 +192,36 @@ async def chat(body: ChatRequest):
     rag_chunks: list[dict] = []
     rag_texts: list[str] = []
     rag_used = False
+    confidence: Optional[float] = None
+
     if body.use_rag and RAGService.is_available():
         top_k = body.n_results or 5
         rag_chunks = RAGService.retrieve_with_metadata(message_en, k=top_k)
         rag_texts = [c["text"] for c in rag_chunks]
         rag_used = bool(rag_texts)
+        if rag_chunks:
+            top_score = rag_chunks[0].get("score")
+            if top_score is not None:
+                confidence = round(float(top_score), 4)
 
-    # Format citations for frontend preview
-    formatted_citations = []
-    for idx, chunk in enumerate(rag_chunks):
+    # Consistent sources schema (title, document_id, clause, url, snippet)
+    formatted_sources = []
+    for chunk in rag_chunks:
         meta = chunk.get("metadata", {})
-        doc_name = meta.get("standard_id") or meta.get("document_id") or "IS Standard"
-        formatted_citations.append({
-            "is_number": doc_name,
-            "doc_type": meta.get("category", "BIS Document"),
-            "page_number": str(meta.get("page", 1)),
-            "text": chunk.get("text", "")[:200],
-            "metadata": meta,
+        title = meta.get("title") or meta.get("standard_id") or meta.get("document_id") or "BIS Standard"
+        doc_id = meta.get("document_id") or meta.get("standard_id") or "IS-STD"
+        clause = str(meta.get("clause") or meta.get("page") or "")
+        url = meta.get("url") or ""
+        snippet = chunk.get("text", "")[:300]
+        score = chunk.get("score")
+
+        formatted_sources.append({
+            "title": title,
+            "document_id": doc_id,
+            "clause": clause,
+            "url": url,
+            "snippet": snippet,
+            "score": score,
         })
 
     # 5. Load conversation history
@@ -197,9 +232,9 @@ async def chat(body: ChatRequest):
         parts = [f"{k}: {v}" for k, v in ctx.items() if v]
         session_context_str = "; ".join(parts)
 
-    # 6. Check response cache (skip if RAG or history — personalised)
+    # 6. Check response cache
     reply_en = None
-    cache_key = make_cache_key(message_en, intent.value, prefix="chat")
+    cache_key = make_cache_key(f"{message_en}_{body.style}", intent.value, prefix="chat")
     if not history and not session_context_str:
         cached = get_cache().get(cache_key)
         if cached:
@@ -213,10 +248,10 @@ async def chat(body: ChatRequest):
             context_chunks=rag_texts,
             history=history,
             session_context=session_context_str,
+            style=body.style or "simple",
         )
         reply_en = await LLMService.complete(prompt)
 
-        # Cache only if no personalisation and no RAG (generic questions)
         if not history and not session_context_str and not rag_used:
             get_cache().set(cache_key, reply_en, ttl=300)
 
@@ -232,9 +267,9 @@ async def chat(body: ChatRequest):
 
     # 9. Persist conversation turn
     add_message(session_id, "user", prompt_text)
-    add_message(session_id, "assistant", reply_final, metadata={"citations": formatted_citations})
+    add_message(session_id, "assistant", reply_final, metadata={"sources": formatted_sources, "confidence": confidence})
 
-    # 10. Update session context with detected intent
+    # 10. Update session context
     ctx = (session.get("context") or {}) if session else {}
     ctx["last_intent"] = intent.value
     update_session_context(session_id, ctx)
@@ -245,8 +280,9 @@ async def chat(body: ChatRequest):
         answer=reply_final,
         intent=intent.value,
         rag_used=rag_used,
-        sources=rag_chunks[:3],
-        citations=formatted_citations,
+        confidence=confidence,
+        sources=formatted_sources,
+        citations=formatted_sources,
         translation_unavailable=translation_unavailable,
         response_lang=response_lang,
     )

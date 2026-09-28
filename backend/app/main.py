@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 
 from fastapi import FastAPI, Depends
 from fastapi.exceptions import RequestValidationError
@@ -67,6 +67,7 @@ app.include_router(feedback.router)
 app.include_router(chat.router)
 app.include_router(chat.router, prefix='/api', include_in_schema=False)
 app.include_router(sessions_router)
+app.include_router(sessions_router, prefix='/api', include_in_schema=False)
 app.include_router(documents.router)
 app.include_router(flashcards.router)
 app.include_router(certification.router)

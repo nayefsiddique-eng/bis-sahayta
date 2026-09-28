@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 venv/
 __pycache__/
 *.pyc
@@ -13,3 +13,4 @@ dist/
 *.env.local
 sessions.db
 backend/uploads/
+backend/storage/

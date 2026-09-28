@@ -1,6 +1,6 @@
 """
 RAG (Retrieval-Augmented Generation) service.
-Wraps the pre-built FAISS vector store from the MAIN backend.
+Wraps the pre-built FAISS vector store from backend/storage/vectorstore.
 Gracefully degrades if the vector store is not available.
 """
 from __future__ import annotations
@@ -34,7 +34,7 @@ class RetrievedChunk:
 # ---------------------------------------------------------------------------
 
 class _VectorStore:
-    """Wraps the FAISS index + metadata from MAIN backend storage."""
+    """Wraps the FAISS index + metadata from storage/vectorstore."""
 
     def __init__(self, vectorstore_path: str) -> None:
         self._available = False
@@ -96,18 +96,20 @@ class _VectorStore:
         if not self._available or self._model is None or self._index is None:
             return []
         try:
+            import faiss
             import numpy as np
-            embedding = self._model.encode([query], convert_to_numpy=True)
-            distances, indices = self._index.search(embedding, k)
+            embedding = self._model.encode([query], convert_to_numpy=True).astype(np.float32)
+            # Perform L2 normalization on query embedding to ensure Inner Product = Cosine Similarity
+            faiss.normalize_L2(embedding)
+            scores, indices = self._index.search(embedding, k)
             results: list[RetrievedChunk] = []
-            for dist, idx in zip(distances[0], indices[0]):
+            for score, idx in zip(scores[0], indices[0]):
                 if idx < 0 or idx >= len(self._documents):
                     continue
                 text = self._documents[idx] if idx < len(self._documents) else ""
                 meta = self._metadata[idx] if idx < len(self._metadata) else {}
-                # Convert L2 distance to similarity score (lower = better for L2)
-                score = float(1.0 / (1.0 + dist))
-                results.append(RetrievedChunk(text=text, metadata=meta, score=score))
+                # score is the inner product (cosine similarity since index and query vectors are L2-normalized)
+                results.append(RetrievedChunk(text=text, metadata=meta, score=float(score)))
             return results
         except Exception as exc:
             logger.error(f"Vector search error: {exc}")
