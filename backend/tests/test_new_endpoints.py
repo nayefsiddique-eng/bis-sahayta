@@ -403,12 +403,41 @@ def test_document_scan_rejects_path_traversal():
 
 
 def test_get_sessions_list_shape_and_order():
+    # Create two sessions
+    resp1 = client.post("/sessions", json={"context": {"product": "test1"}}, headers=AUTH)
+    assert resp1.status_code == 201
+    session1 = resp1.json()
+    assert "session_id" in session1
+
+    resp2 = client.post("/sessions", json={"context": {"product": "test2"}}, headers=AUTH)
+    assert resp2.status_code == 201
+    session2 = resp2.json()
+    assert "session_id" in session2
+
+    # Test /sessions endpoint
     resp = client.get("/sessions", headers=AUTH)
     assert resp.status_code == 200
     data = resp.json()
     assert isinstance(data, list)
-    if len(data) >= 2:
-        assert data[0]["updated_at"] >= data[1]["updated_at"]
+    # We expect exactly two sessions (since db is fresh)
+    assert len(data) == 2
+    # Newest first: session2 should be first because it was created after session1
+    assert data[0]["updated_at"] >= data[1]["updated_at"]
+    # Also check that we have the two session IDs we created
+    session_ids = {session["session_id"] for session in data}
+    assert session1["session_id"] in session_ids
+    assert session2["session_id"] in session_ids
+
+    # Test /api/sessions endpoint (alias)
+    resp = client.get("/api/sessions", headers=AUTH)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert isinstance(data, list)
+    assert len(data) == 2
+    assert data[0]["updated_at"] >= data[1]["updated_at"]
+    session_ids = {session["session_id"] for session in data}
+    assert session1["session_id"] in session_ids
+    assert session2["session_id"] in session_ids
 
 
 def test_chat_relevance_field_and_api_alias():
@@ -417,6 +446,17 @@ def test_chat_relevance_field_and_api_alias():
     assert resp.status_code == 200
     data = resp.json()
     assert "relevance" in data
+    # relevance is either a float between 0 and 1 or None
+    relevance = data["relevance"]
+    if relevance is not None:
+        assert isinstance(relevance, float)
+        assert 0.0 <= relevance <= 1.0
+    # Check that rag_used and sources are consistent
+    assert "rag_used" in data
+    assert "sources" in data
+    assert isinstance(data["sources"], list)
+    # rag_used should be True if and only if sources is non-empty
+    assert data["rag_used"] == (len(data["sources"]) > 0)
 
 
 def test_chat_style_validation():
