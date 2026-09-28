@@ -456,9 +456,9 @@ function Chat({ messages, query, setQuery, send, mode, setMode, retry }) {
                   </div>
                 )}
 
-                {m.role === 'assistant' && !m.loading && typeof m.confidence === 'number' && (
+                {m.role === 'assistant' && !m.loading && typeof m.relevance === 'number' && (
                   <div className="confidence">
-                    Confidence: {Math.round(m.confidence * 100)}%
+                    Relevance: {Math.round(m.relevance * 100)}%
                   </div>
                 )}
               </div>
