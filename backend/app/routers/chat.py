@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.services.intent_classifier import classify_intent
 from app.services.rag_service import RAGService
+from app.core.config import settings
 from app.services.llm_service import LLMService
 from app.services.session_db import (
     create_session,
@@ -191,7 +192,8 @@ async def chat(body: ChatRequest):
     if body.use_rag and RAGService.is_available():
         top_k = body.n_results or 5
         rag_chunks = RAGService.retrieve_with_metadata(message_en, k=top_k)
-        rag_texts = [c["text"] for c in rag_chunks]
+        rag_chunks = [_c for _c in rag_chunks if float(_c.get("score") or 0) >= settings.RAG_MIN_SCORE]
+        rag_texts = [f"[{_i}] {(c.get('metadata') or {}).get('is_number', 'BIS document')}, page {(c.get('metadata') or {}).get('page_number', '?')}: {c['text']}" for _i, c in enumerate(rag_chunks, 1)]
         rag_used = bool(rag_texts)
         if rag_chunks:
             top_score = rag_chunks[0].get("score")
@@ -202,9 +204,9 @@ async def chat(body: ChatRequest):
     formatted_sources = []
     for chunk in rag_chunks:
         meta = chunk.get("metadata", {})
-        title = meta.get("title") or meta.get("standard_id") or meta.get("document_id") or "BIS Standard"
-        doc_id = meta.get("document_id") or meta.get("standard_id") or "IS-STD"
-        clause = str(meta.get("clause") or meta.get("page") or "")
+        title = meta.get("title") or meta.get("is_number") or meta.get("standard_id") or meta.get("document_id") or "BIS Standard"
+        doc_id = meta.get("document_id") or meta.get("is_number") or meta.get("standard_id") or "IS-STD"
+        clause = str(meta.get("clause") or meta.get("page_number") or meta.get("page") or "")
         url = meta.get("url") or ""
         snippet = chunk.get("text", "")[:300]
         score = chunk.get("score")

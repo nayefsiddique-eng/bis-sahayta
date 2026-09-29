@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     VECTORSTORE_PATH: str = str(BACKEND_DIR / "storage" / "vectorstore")
     EMBEDDING_MODEL: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     RAG_TOP_K: int = 5
+    RAG_MIN_SCORE: float = 0.30
 
     # Chat session DB
     SESSION_DB_PATH: str = str(BACKEND_DIR / "sessions.db")
