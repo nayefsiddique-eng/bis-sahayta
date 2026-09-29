@@ -1,6 +1,7 @@
 import json
 import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from app.core.config import settings
 from app.schemas.language import LanguagePreference
 from app.schemas.compliance import QueryInput
 from app.routers.query import handle_query
@@ -15,6 +16,11 @@ router = APIRouter(prefix="/voice", tags=["voice"])
 
 @router.websocket("/stream")
 async def voice_stream_endpoint(websocket: WebSocket):
+    import hmac as _hmac
+    _key = websocket.headers.get("x-api-key") or websocket.query_params.get("api_key") or ""
+    if not _hmac.compare_digest(_key.encode(), settings.API_KEY.encode()):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     logger.info("WebSocket voice stream connection established.")
 

@@ -124,3 +124,13 @@ def test_voice_websocket_stream_roundtrip(mock_transcribe, mock_tts):
         assert msg_response["type"] == "response"
         assert "query_response" in msg_response
         assert msg_response["audio_b64"] != ""
+
+
+def test_voice_websocket_rejects_missing_key():
+    import pytest as _pytest
+    from fastapi.testclient import TestClient as _TC
+    from starlette.websockets import WebSocketDisconnect as _WSD
+    from app.main import app as _app
+    with _pytest.raises(_WSD):
+        with _TC(_app).websocket_connect("/voice/stream"):
+            pass
