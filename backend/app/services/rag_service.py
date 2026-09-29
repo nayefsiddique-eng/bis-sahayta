@@ -92,6 +92,24 @@ class _VectorStore:
     def available(self) -> bool:
         return self._available
 
+    def _key_list(self):
+        keys = getattr(self, "_keys_cache", None)
+        if keys is None and isinstance(self._documents, dict):
+            keys = list(self._documents.keys())
+            if True:
+                try:
+                    import pickle
+                    from pathlib import Path
+                    _p = Path(settings.VECTORSTORE_PATH) / "bis_documents_ids.pkl"
+                    with open(_p, "rb") as _fh:
+                        _ids = list(pickle.load(_fh))
+                    if len(_ids) == len(keys) and all(_i in self._documents for _i in _ids):
+                        keys = _ids
+                except Exception as _exc:
+                    logger.warning(f"Could not load vector store ids: {_exc}")
+            self._keys_cache = keys
+        return keys
+
     def search(self, query: str, k: int = 5) -> list[RetrievedChunk]:
         if not self._available or self._model is None or self._index is None:
             return []
@@ -104,10 +122,17 @@ class _VectorStore:
             scores, indices = self._index.search(embedding, k)
             results: list[RetrievedChunk] = []
             for score, idx in zip(scores[0], indices[0]):
+                idx = int(idx)
                 if idx < 0 or idx >= len(self._documents):
                     continue
-                text = self._documents[idx] if idx < len(self._documents) else ""
-                meta = self._metadata[idx] if idx < len(self._metadata) else {}
+                _keys = self._key_list()
+                if _keys is not None:
+                    _k = _keys[idx]
+                    text = self._documents[_k]
+                    meta = self._metadata.get(_k, {}) if isinstance(self._metadata, dict) else {}
+                else:
+                    text = self._documents[idx]
+                    meta = self._metadata[idx] if idx < len(self._metadata) else {}
                 # score is the inner product (cosine similarity since index and query vectors are L2-normalized)
                 results.append(RetrievedChunk(text=text, metadata=meta, score=float(score)))
             return results
