@@ -58,15 +58,6 @@ class ChatRequest(BaseModel):
         return data
 
 
-class SourceItem(BaseModel):
-    title: str = Field(..., description="Document title or standard ID")
-    document_id: str = Field(..., description="Unique document ID")
-    clause: str = Field("", description="Clause or section reference")
-    url: str = Field("", description="Document URL if available")
-    snippet: str = Field("", description="Retrieved text snippet")
-    score: Optional[float] = Field(None, description="Cosine similarity score")
-
-
 class ChatResponse(BaseModel):
     session_id: str
     reply: str
