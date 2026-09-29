@@ -1,9 +1,8 @@
 import logging
 
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import APIKeyHeader
 
 from app.routers import query, compliance, translate, voice, standards, feedback
 from app.routers import chat, documents, flashcards, certification, tasks
@@ -23,10 +22,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Registers X-API-Key in OpenAPI so Swagger shows the Authorize button.
-# Enforcement is still done by RequestTracingAndAuthMiddleware.
-api_key_scheme = APIKeyHeader(name="X-API-Key", auto_error=False)
-
 app = FastAPI(
     title="BIS Compliance & Intelligence Assistant API",
     description=(
@@ -36,7 +31,6 @@ app = FastAPI(
     version=settings.VERSION,
     docs_url="/docs",
     redoc_url="/redoc",
-    dependencies=[Depends(api_key_scheme)],
 )
 
 # -- Exception Handlers
@@ -150,3 +144,34 @@ def readiness_check():
         status_code=status_code,
     )
 
+# -- OpenAPI: document X-API-Key (Swagger Authorize) without a runtime dependency,
+# -- so WebSocket routes are unaffected. Enforcement stays in the middleware.
+from fastapi.openapi.utils import get_openapi
+
+_PUBLIC_DOC_PATHS = {"/health", "/api/health", "/ready"}
+_HTTP_METHODS = {"get", "post", "put", "patch", "delete", "options", "head"}
+
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    schema.setdefault("components", {}).setdefault("securitySchemes", {})[
+        "APIKeyHeader"
+    ] = {"type": "apiKey", "in": "header", "name": "X-API-Key"}
+    for path, item in schema.get("paths", {}).items():
+        if path in _PUBLIC_DOC_PATHS:
+            continue
+        for method, op in item.items():
+            if method in _HTTP_METHODS and isinstance(op, dict):
+                op["security"] = [{"APIKeyHeader": []}]
+    app.openapi_schema = schema
+    return schema
+
+
+app.openapi = custom_openapi
