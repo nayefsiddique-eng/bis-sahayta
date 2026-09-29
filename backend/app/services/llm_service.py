@@ -112,14 +112,16 @@ class GeminiProvider(LLMProvider):
                 if is_429:
                     m = re.search(r"retry[^0-9]{0,30}(\d+)", msg, re.I)
                     wait = int(m.group(1)) + 1 if m else 2 ** (attempt + 1)
-                    if attempt < attempts - 1 and wait <= max_wait:
+                    if attempt < attempts - 1 and wait <= max_wait and "PerDay" not in msg:
                         logger.warning(f"Gemini 429, retrying in {wait}s (attempt {attempt + 1}/{attempts})")
                         await asyncio.sleep(wait)
                         continue
                     logger.error(f"Gemini rate limit exhausted: {exc}")
+                    _q = re.search(r'quota_id: "([^"]+)"', msg)
+                    _qid = _q.group(1) if _q else None
                     raise HTTPException(
                         status_code=429,
-                        detail={"error_code": "LLM_RATE_LIMITED", "message": "Gemini rate limit reached. Please retry shortly.", "retry_after": wait},
+                        detail={"error_code": "LLM_RATE_LIMITED", "message": "Gemini rate limit reached. Please retry shortly.", "retry_after": wait, "retry_after_seconds": wait, "quota_id": _qid},
                         headers={"Retry-After": str(wait)},
                     ) from exc
                 logger.error(f"GeminiProvider API execution error: {exc}")
