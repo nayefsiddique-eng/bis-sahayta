@@ -29,7 +29,10 @@ async function apiFetch(url, options = {}) {
     const errorMsg = typeof data?.detail === 'string'
       ? data.detail
       : data?.detail?.message || data?.message || `Request failed (${response.status})`;
-    throw new Error(errorMsg);
+    const err = new Error(errorMsg);
+    err.status = response.status;
+    err.retryAfter = Number(response.headers.get('Retry-After')) || (data && data.detail && (data.detail.retry_after_seconds || data.detail.retry_after)) || null;
+    throw err;
   }
   return data;
 }
@@ -133,7 +136,7 @@ function App() {
               role: 'assistant',
               text: data.answer || data.reply || 'No answer was returned by the BIS backend.',
               sources: data.sources || [],
-              confidence: data.confidence,
+              relevance: typeof data.relevance === 'number' ? data.relevance : data.confidence,
               intent: data.intent,
             }
           : msg
@@ -143,7 +146,7 @@ function App() {
         i === m.length - 1
           ? {
               role: 'assistant',
-              text: `Unable to complete request. ${error.message}`,
+              text: error.status === 429 ? `The AI service is rate limited right now. Please wait ${error.retryAfter || 30} seconds and press Retry.` : `Unable to complete request. ${error.message}`,
               error: true,
             }
           : msg
