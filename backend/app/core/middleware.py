@@ -7,6 +7,18 @@ from app.core.exceptions import APIException
 from app.core.rate_limiter import rate_limiter
 
 logger = logging.getLogger("bis_backend")
+
+_orig_record_factory = logging.getLogRecordFactory()
+
+
+def _record_factory(*args, **kwargs):
+    record = _orig_record_factory(*args, **kwargs)
+    if not hasattr(record, "request_id"):
+        record.request_id = "-"
+    return record
+
+
+logging.setLogRecordFactory(_record_factory)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] [req_id=%(request_id)s] %(message)s"
@@ -19,8 +31,7 @@ class RequestIDLogFilter(logging.Filter):
         self.request_id = request_id
 
     def filter(self, record):
-        if not hasattr(record, "request_id"):
-            record.request_id = self.request_id
+        record.request_id = self.request_id
         return True
 
 class RequestTracingAndAuthMiddleware(BaseHTTPMiddleware):
