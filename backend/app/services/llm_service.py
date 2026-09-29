@@ -235,12 +235,18 @@ class LLMService:
         ctx_section = f"\nSESSION CONTEXT:\n{session_context}\n" if session_context else ""
         rag_section = f"\nRELEVANT STANDARDS/DOCUMENTS:\n{context}\n" if context else ""
         hist_section = f"\nCONVERSATION HISTORY:\n{history_text}\n" if history_text else ""
+        grounding = (
+            "Use the numbered documents below as your primary source and cite them inline like [1] or [2]. If something is not covered by them, say it comes from general knowledge and should be verified against the official standard. Never invent clause numbers."
+            if context
+            else "No indexed BIS document matched this question, so answer from general knowledge and state clearly that it is not verified against an indexed BIS document."
+        )
 
         return textwrap.dedent(f"""
             You are a knowledgeable BIS Compliance & Standards Assistant.
             {style_instruction}
             You help users understand Indian standards, QCOs, certification requirements, and compliance.
             Do NOT fabricate standards, regulations, or compliance results.
+            {grounding}
             {ctx_section}{rag_section}{hist_section}
             CURRENT QUESTION:
             {question}

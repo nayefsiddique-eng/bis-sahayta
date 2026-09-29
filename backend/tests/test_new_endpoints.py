@@ -463,3 +463,15 @@ def test_chat_style_validation():
     payload = {"message": "Tell me about BIS", "style": "invalid_style_xyz"}
     resp = client.post("/api/chat", json=payload, headers=AUTH)
     assert resp.status_code == 422
+
+
+def test_chat_sources_use_index_metadata():
+    import pytest
+    from app.services.rag_service import RAGService
+    if not RAGService.is_available():
+        pytest.skip("vector store not present")
+    resp = client.post("/api/chat", json={"query": "household electrical appliances safety"}, headers=AUTH)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["rag_used"] is True
+    assert all(s["title"] != "BIS Standard" for s in data["sources"])
