@@ -256,3 +256,14 @@ def test_rag_retrieve_texts():
     assert isinstance(texts, list)
     for t in texts:
         assert isinstance(t, str)
+
+
+def test_rag_retrieves_real_chunks():
+    import pytest
+    from app.services.rag_service import RAGService
+    if not RAGService.is_available():
+        pytest.skip("vector store not present")
+    chunks = RAGService.retrieve_with_metadata("household electrical appliances safety", k=3)
+    assert len(chunks) == 3
+    assert chunks[0]["text"]
+    assert chunks[0]["score"] > 0.4
