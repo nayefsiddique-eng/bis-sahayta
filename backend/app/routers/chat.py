@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from pathlib import Path
 from typing import Optional, Literal
 
 from fastapi import APIRouter, Header, HTTPException
@@ -47,6 +48,7 @@ class ChatRequest(BaseModel):
     use_rag: bool = Field(True, description="Whether to retrieve context from the document store.")
     n_results: Optional[int] = Field(5, description="Number of RAG results")
     style: Optional[Literal["simple", "short", "technical"]] = Field("simple", description="Response style mode")
+    document_id: Optional[str] = Field(None, description="Optional uploaded document ID to focus analysis/RAG on")
 
     @model_validator(mode="before")
     @classmethod
@@ -184,17 +186,58 @@ async def chat(body: ChatRequest):
     # 3. Classify intent
     intent = classify_intent(message_en)
 
-    # 4. Retrieve RAG context
+    # 4. Retrieve RAG context & uploaded document context
     rag_chunks: list[dict] = []
     rag_texts: list[str] = []
     rag_used = False
     confidence: Optional[float] = None
 
+    # Handle attached document text if document_id is provided
+    if body.document_id:
+        from app.routers.documents import _load_meta_db
+        db = _load_meta_db()
+        doc_meta = db.get(body.document_id)
+        if doc_meta:
+            text_path = Path(doc_meta.get("text_path", ""))
+            doc_text = ""
+            if text_path.exists():
+                doc_text = text_path.read_text(encoding="utf-8")
+            elif doc_meta.get("extracted_text_preview"):
+                doc_text = doc_meta["extracted_text_preview"]
+
+            if doc_text:
+                fname = doc_meta.get("filename", "Uploaded Document")
+                rag_texts.append(f"[Uploaded Document: {fname} (ID: {body.document_id})]:\n{doc_text[:3000]}")
+                rag_used = True
+                formatted_doc_source = {
+                    "title": f"Attached Document: {fname}",
+                    "document_id": body.document_id,
+                    "clause": "Full Text",
+                    "url": "",
+                    "snippet": doc_text[:300],
+                    "score": 1.0,
+                }
+
     if body.use_rag and RAGService.is_available():
         top_k = body.n_results or 5
-        rag_chunks = RAGService.retrieve_with_metadata(message_en, k=top_k)
-        rag_chunks = [_c for _c in rag_chunks if float(_c.get("score") or 0) >= settings.RAG_MIN_SCORE]
-        rag_texts = [f"[{_i}] {(c.get('metadata') or {}).get('is_number', 'BIS document')}, page {(c.get('metadata') or {}).get('page_number', '?')}: {c['text']}" for _i, c in enumerate(rag_chunks, 1)]
+        vector_chunks = RAGService.retrieve_with_metadata(message_en, k=top_k)
+        vector_chunks = [_c for _c in vector_chunks if float(_c.get("score") or 0) >= settings.RAG_MIN_SCORE]
+        # Deduplicate by text content (remove near-identical chunks)
+        seen_texts: set = set()
+        deduped_chunks = []
+        for _c in vector_chunks:
+            _text_key = _c.get("text", "")[:100]
+            if _text_key not in seen_texts:
+                seen_texts.add(_text_key)
+                deduped_chunks.append(_c)
+        rag_chunks = deduped_chunks
+        # Build readable RAG context for the LLM prompt
+        for c in rag_chunks:
+            meta = c.get("metadata") or {}
+            std_id = meta.get("standard_id") or meta.get("is_number") or meta.get("title") or "BIS document"
+            page = meta.get("page_number") or meta.get("page") or "?"
+            idx = len(rag_texts) + 1
+            rag_texts.append(f"[{idx}] {std_id}, page {page}: {c['text']}")
         rag_used = bool(rag_texts)
         if rag_chunks:
             top_score = rag_chunks[0].get("score")
@@ -203,10 +246,24 @@ async def chat(body: ChatRequest):
 
     # Consistent sources schema (title, document_id, clause, url, snippet)
     formatted_sources = []
+    if 'formatted_doc_source' in locals() and formatted_doc_source:
+        formatted_sources.append(formatted_doc_source)
+
     for chunk in rag_chunks:
         meta = chunk.get("metadata", {})
-        title = meta.get("title") or meta.get("is_number") or meta.get("standard_id") or meta.get("document_id") or "BIS Standard"
-        doc_id = meta.get("document_id") or meta.get("is_number") or meta.get("standard_id") or "IS-STD"
+        title = (
+            meta.get("title")
+            or meta.get("standard_id")
+            or meta.get("is_number")
+            or meta.get("document_id")
+            or "BIS Standard"
+        )
+        doc_id = (
+            meta.get("document_id")
+            or meta.get("standard_id")
+            or meta.get("is_number")
+            or "IS-STD"
+        )
         clause = str(meta.get("clause") or meta.get("page_number") or meta.get("page") or "")
         url = meta.get("url") or ""
         snippet = chunk.get("text", "")[:300]

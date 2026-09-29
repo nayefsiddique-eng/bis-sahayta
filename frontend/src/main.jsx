@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
-  Search, Plus, Sun, Moon, Settings, History, Compass, Paperclip, Mic, Send, Menu, X,
-  ChevronRight, ArrowLeft, Bookmark, MessageSquare, Trash2, CheckCircle2, Volume2, Copy
+  Search, Plus, Sun, Moon, Settings, History, Compass, Paperclip, Mic, MicOff,
+  Send, Menu, X, ChevronRight, ArrowLeft, Bookmark, MessageSquare, Trash2,
+  CheckCircle2, Volume2, VolumeX, Copy, FileText, AlertCircle, Loader2
 } from 'lucide-react';
 import './styles.css';
 import bisLogo from "./assets/bis.png";
@@ -17,10 +18,15 @@ const prompts = [
   'Testing & Lab Compliance'
 ];
 
+// ─────────────────────────────────────────────────────────────────────────────
+// API helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
 async function apiFetch(url, options = {}) {
+  const isFormData = options.body instanceof FormData;
   const headers = {
-    'Content-Type': 'application/json',
     'X-API-Key': API_KEY,
+    ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
     ...(options.headers || {}),
   };
   const response = await fetch(url, { ...options, headers });
@@ -31,11 +37,149 @@ async function apiFetch(url, options = {}) {
       : data?.detail?.message || data?.message || `Request failed (${response.status})`;
     const err = new Error(errorMsg);
     err.status = response.status;
-    err.retryAfter = Number(response.headers.get('Retry-After')) || (data && data.detail && (data.detail.retry_after_seconds || data.detail.retry_after)) || null;
+    err.retryAfter = Number(response.headers.get('Retry-After')) ||
+      (data?.detail && (data.detail.retry_after_seconds || data.detail.retry_after)) || null;
     throw err;
   }
   return data;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Markdown renderer (safe, no external dep)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function renderMarkdown(text) {
+  if (!text) return '';
+  // Escape HTML first to prevent XSS
+  const escaped = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  const lines = escaped.split('\n');
+  const output = [];
+  let inCode = false;
+  let codeLines = [];
+  let codeLang = '';
+  let inList = false;
+  let listItems = [];
+  let listType = null;
+
+  const flushList = () => {
+    if (!inList) return;
+    const tag = listType === 'ol' ? 'ol' : 'ul';
+    output.push(`<${tag}>${listItems.join('')}</${tag}>`);
+    listItems = [];
+    inList = false;
+    listType = null;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Fenced code blocks
+    if (line.startsWith('```')) {
+      if (!inCode) {
+        flushList();
+        inCode = true;
+        codeLang = line.slice(3).trim();
+        codeLines = [];
+        continue;
+      } else {
+        inCode = false;
+        const code = codeLines.join('\n');
+        output.push(`<pre><code class="lang-${codeLang}">${code}</code></pre>`);
+        codeLines = [];
+        continue;
+      }
+    }
+    if (inCode) {
+      codeLines.push(line);
+      continue;
+    }
+
+    // Headings
+    const h3 = line.match(/^### (.+)/);
+    const h2 = line.match(/^## (.+)/);
+    const h1 = line.match(/^# (.+)/);
+    if (h3) { flushList(); output.push(`<h3>${inlineFormat(h3[1])}</h3>`); continue; }
+    if (h2) { flushList(); output.push(`<h3>${inlineFormat(h2[1])}</h3>`); continue; }  // intentionally h3 for cleaner look
+    if (h1) { flushList(); output.push(`<h3>${inlineFormat(h1[1])}</h3>`); continue; }
+
+    // Ordered list
+    const olMatch = line.match(/^(\d+)\. (.+)/);
+    if (olMatch) {
+      if (!inList || listType !== 'ol') { flushList(); inList = true; listType = 'ol'; }
+      listItems.push(`<li>${inlineFormat(olMatch[2])}</li>`);
+      continue;
+    }
+
+    // Unordered list
+    const ulMatch = line.match(/^[-*+] (.+)/);
+    if (ulMatch) {
+      if (!inList || listType !== 'ul') { flushList(); inList = true; listType = 'ul'; }
+      listItems.push(`<li>${inlineFormat(ulMatch[1])}</li>`);
+      continue;
+    }
+
+    // Empty line
+    if (line.trim() === '') {
+      flushList();
+      output.push('<br>');
+      continue;
+    }
+
+    // Horizontal rule
+    if (/^---+$/.test(line.trim())) {
+      flushList();
+      output.push('<hr>');
+      continue;
+    }
+
+    // Normal paragraph line
+    flushList();
+    output.push(`<p>${inlineFormat(line)}</p>`);
+  }
+
+  flushList();
+  if (inCode && codeLines.length) {
+    output.push(`<pre><code>${codeLines.join('\n')}</code></pre>`);
+  }
+
+  // Clean up consecutive <br> elements
+  return output.join('').replace(/(<br>){3,}/g, '<br><br>');
+}
+
+function inlineFormat(text) {
+  return text
+    // Bold+italic
+    .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
+    // Bold
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/__(.+?)__/g, '<strong>$1</strong>')
+    // Italic
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/_(.+?)_/g, '<em>$1</em>')
+    // Inline code
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    // Inline citations like [1], [2]
+    .replace(/\[(\d+)\]/g, '<cite>[$1]</cite>');
+}
+
+function MarkdownContent({ text }) {
+  const html = renderMarkdown(text || '');
+  return (
+    <div
+      className="message-text markdown"
+      // Safe: we escape HTML before processing markdown
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// App root
+// ─────────────────────────────────────────────────────────────────────────────
 
 function App() {
   const [page, setPage] = useState('home');
@@ -46,27 +190,29 @@ function App() {
   const [sessions, setSessions] = useState([]);
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [mode, setMode] = useState('Simple');
-  const [settings, setSettings] = useState({ large: false, citations: true });
+  const [appSettings, setAppSettings] = useState({ large: false, citations: true });
+  const [isLoading, setIsLoading] = useState(false);
+
+  // Pending attachment state (shared across chat pages)
+  const [pendingFile, setPendingFile] = useState(null); // { file, document_id, name, status }
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark);
     localStorage.setItem('bis-theme', dark ? 'dark' : 'light');
   }, [dark]);
 
-  const fetchSessions = async () => {
+  const fetchSessions = useCallback(async () => {
     try {
       const data = await apiFetch('/api/sessions');
       setSessions(Array.isArray(data) ? data : []);
     } catch (err) {
       console.error('Failed to load sessions:', err);
     }
-  };
-
-  useEffect(() => {
-    fetchSessions();
   }, []);
 
-  const loadSession = async (sid) => {
+  useEffect(() => { fetchSessions(); }, [fetchSessions]);
+
+  const loadSession = useCallback(async (sid) => {
     try {
       const msgs = await apiFetch(`/api/sessions/${sid}/messages`);
       setActiveSessionId(sid);
@@ -84,39 +230,43 @@ function App() {
       setPage('chat');
     } catch (err) {
       console.error('Failed to load session messages:', err);
+      alert('Failed to load session. Please try again.');
     }
-  };
+  }, []);
 
-  const deleteSession = async (sid) => {
+  const deleteSession = useCallback(async (sid) => {
     try {
       await apiFetch(`/api/sessions/${sid}`, { method: 'DELETE' });
-      if (activeSessionId === sid) {
-        newChat();
-      }
+      if (activeSessionId === sid) newChat();
       fetchSessions();
     } catch (err) {
       console.error('Failed to delete session:', err);
     }
-  };
+  }, [activeSessionId, fetchSessions]);
 
-  const send = async (text = query) => {
-    text = text.trim();
-    if (!text) return;
+  const send = useCallback(async (text = query, attachmentDocId = null) => {
+    text = typeof text === 'string' ? text.trim() : '';
+    if (!text || isLoading) return;
+
+    const docId = attachmentDocId || (pendingFile?.document_id) || null;
 
     setMessages(m => [
       ...m,
-      { role: 'user', text },
+      { role: 'user', text, attachmentName: pendingFile?.name || null },
       { role: 'assistant', text: '', loading: true }
     ]);
 
     setQuery('');
     setPage('chat');
+    setIsLoading(true);
+    if (docId) setPendingFile(null); // clear attachment after send
 
     try {
       const styleMap = { Simple: 'simple', Short: 'short', Technical: 'technical' };
       const bodyPayload = {
         query: text,
         session_id: activeSessionId || undefined,
+        document_id: docId || undefined,
         lang: 'en',
         use_rag: true,
         n_results: 5,
@@ -145,32 +295,46 @@ function App() {
           : msg
       ));
     } catch (error) {
+      const friendlyMsg = error.status === 429
+        ? `The AI service is rate limited. Please wait ${error.retryAfter || 30} seconds and press Retry.`
+        : error.status === 404
+        ? 'Session not found. Starting a new conversation.'
+        : error.status >= 500
+        ? 'The server encountered an error. Please try again shortly.'
+        : error.status === 401
+        ? 'Authentication error. Please refresh the page.'
+        : `Unable to complete request: ${error.message}`;
+
       setMessages(m => m.map((msg, i) =>
         i === m.length - 1
-          ? {
-              role: 'assistant',
-              text: error.status === 429 ? `The AI service is rate limited right now. Please wait ${error.retryAfter || 30} seconds and press Retry.` : `Unable to complete request. ${error.message}`,
-              error: true,
-            }
+          ? { role: 'assistant', text: friendlyMsg, error: true, retryAfter: error.retryAfter }
           : msg
       ));
+    } finally {
+      setIsLoading(false);
     }
-  };
+  }, [query, isLoading, pendingFile, activeSessionId, mode, fetchSessions]);
 
-  const newChat = () => {
+  const newChat = useCallback(() => {
     setMessages([]);
     setActiveSessionId(null);
     setPage('home');
     setQuery('');
-  };
+    setPendingFile(null);
+  }, []);
 
-  const nav = (p) => {
+  const nav = useCallback((p) => {
     setPage(p);
     setMobile(false);
-  };
+  }, []);
+
+  const retry = useCallback(() => {
+    const lastUser = [...messages].reverse().find(m => m.role === 'user');
+    if (lastUser) send(lastUser.text);
+  }, [messages, send]);
 
   return (
-    <div className={settings.large ? 'app large-text' : 'app'}>
+    <div className={appSettings.large ? 'app large-text' : 'app'}>
       <header className="topbar">
         <button className="icon-btn mobile-only" onClick={() => setMobile(!mobile)}>
           {mobile ? <X /> : <Menu />}
@@ -225,14 +389,14 @@ function App() {
 
           <div className="side-label">RECENT</div>
 
-          {sessions.slice(0, 5).map(c => (
+          {sessions.slice(0, 8).map(c => (
             <button
               className={'chat-link ' + (activeSessionId === c.id ? 'active' : '')}
               key={c.id}
               onClick={() => loadSession(c.id)}
             >
               <MessageSquare size={16} />
-              <span>{c.preview || 'Chat session'}</span>
+              <span>{(c.preview || 'Chat session').slice(0, 40)}</span>
             </button>
           ))}
 
@@ -248,7 +412,15 @@ function App() {
 
         <main className="main">
           {page === 'home' && (
-            <Home query={query} setQuery={setQuery} send={send} nav={nav} />
+            <Home
+              query={query}
+              setQuery={setQuery}
+              send={send}
+              nav={nav}
+              pendingFile={pendingFile}
+              setPendingFile={setPendingFile}
+              isLoading={isLoading}
+            />
           )}
 
           {page === 'chat' && (
@@ -259,10 +431,10 @@ function App() {
               send={send}
               mode={mode}
               setMode={setMode}
-              retry={() => {
-                const lastUser = [...messages].reverse().find(m => m.role === 'user');
-                if (lastUser) send(lastUser.text);
-              }}
+              retry={retry}
+              pendingFile={pendingFile}
+              setPendingFile={setPendingFile}
+              isLoading={isLoading}
             />
           )}
 
@@ -287,8 +459,8 @@ function App() {
             <SettingsPage
               dark={dark}
               setDark={setDark}
-              settings={settings}
-              setSettings={setSettings}
+              settings={appSettings}
+              setSettings={setAppSettings}
             />
           )}
         </main>
@@ -296,6 +468,10 @@ function App() {
     </div>
   );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Nav item
+// ─────────────────────────────────────────────────────────────────────────────
 
 function Nav({ active, icon, label, onClick }) {
   return (
@@ -306,7 +482,393 @@ function Nav({ active, icon, label, onClick }) {
   );
 }
 
-function Home({ query, setQuery, send, nav }) {
+// ─────────────────────────────────────────────────────────────────────────────
+// Voice (STT using Web Speech API)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function VoiceButton({ onTranscript, disabled }) {
+  const [listening, setListening] = useState(false);
+  const [error, setError] = useState(null);
+  const recognitionRef = useRef(null);
+
+  const isSupported = typeof window !== 'undefined' &&
+    ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
+
+  const startListening = useCallback(() => {
+    if (!isSupported) {
+      setError('Voice input is not supported in this browser. Please use Chrome or Edge.');
+      return;
+    }
+    if (listening) return;
+
+    setError(null);
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = 'en-IN'; // Indian English
+
+    recognition.onstart = () => setListening(true);
+
+    recognition.onresult = (e) => {
+      const transcript = Array.from(e.results)
+        .map(r => r[0].transcript)
+        .join(' ')
+        .trim();
+      if (transcript) {
+        onTranscript(transcript);
+      } else {
+        setError('No speech detected. Please try again.');
+      }
+    };
+
+    recognition.onerror = (e) => {
+      setListening(false);
+      if (e.error === 'not-allowed' || e.error === 'permission-denied') {
+        setError('Microphone access denied. Please allow microphone access in your browser settings.');
+      } else if (e.error === 'no-speech') {
+        setError('No speech detected. Please speak clearly and try again.');
+      } else if (e.error === 'network') {
+        setError('Network error during voice recognition. Please check your connection.');
+      } else {
+        setError(`Voice input error: ${e.error}`);
+      }
+    };
+
+    recognition.onend = () => {
+      setListening(false);
+      recognitionRef.current = null;
+    };
+
+    recognitionRef.current = recognition;
+    try {
+      recognition.start();
+    } catch (err) {
+      setListening(false);
+      setError('Failed to start voice input. Please try again.');
+    }
+  }, [isSupported, listening, onTranscript]);
+
+  const stopListening = useCallback(() => {
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+    }
+    setListening(false);
+  }, []);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.abort();
+      }
+    };
+  }, []);
+
+  return (
+    <div className="voice-container">
+      <button
+        className={`mini voice-btn ${listening ? 'recording' : ''}`}
+        onClick={listening ? stopListening : startListening}
+        disabled={disabled || !isSupported}
+        title={
+          !isSupported
+            ? 'Voice input not supported in this browser'
+            : listening
+            ? 'Click to stop recording'
+            : 'Click to start voice input'
+        }
+      >
+        {listening ? <MicOff size={17} /> : <Mic size={17} />}
+        {listening ? 'Stop' : 'Voice'}
+      </button>
+      {error && (
+        <div className="voice-error">
+          <AlertCircle size={12} />
+          {error}
+          <button className="voice-error-close" onClick={() => setError(null)}>×</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// File Attachment
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ALLOWED_TYPES = [
+  'application/pdf',
+  'image/jpeg',
+  'image/png',
+  'image/tiff',
+  'image/webp',
+];
+const MAX_SIZE_MB = 20;
+
+function AttachButton({ pendingFile, setPendingFile, disabled }) {
+  const fileInputRef = useRef(null);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const handleFileSelect = useCallback(async (file) => {
+    if (!file) return;
+    setError(null);
+
+    // Client-side validation
+    if (!ALLOWED_TYPES.includes(file.type)) {
+      setError(`Unsupported file type. Allowed: PDF, JPEG, PNG, TIFF, WebP`);
+      return;
+    }
+    if (file.size > MAX_SIZE_MB * 1024 * 1024) {
+      setError(`File too large. Maximum size is ${MAX_SIZE_MB} MB.`);
+      return;
+    }
+    if (file.size === 0) {
+      setError('File is empty. Please select a valid file.');
+      return;
+    }
+
+    setUploading(true);
+    setPendingFile({ file, name: file.name, status: 'uploading', document_id: null });
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('lang', 'eng');
+
+      const data = await apiFetch('/api/documents/upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      setPendingFile({
+        file,
+        name: file.name,
+        status: 'ready',
+        document_id: data.document_id,
+        preview: data.extracted_text_preview || '',
+      });
+    } catch (err) {
+      setPendingFile(null);
+      if (err.status === 413) {
+        setError('File too large for the server. Please use a smaller file.');
+      } else if (err.status === 415) {
+        setError('Unsupported file type. Please use PDF or an image.');
+      } else {
+        setError(`Upload failed: ${err.message}`);
+      }
+    } finally {
+      setUploading(false);
+    }
+  }, [setPendingFile]);
+
+  const handleInputChange = (e) => {
+    const file = e.target.files?.[0];
+    if (file) handleFileSelect(file);
+    // Reset input so same file can be re-selected
+    e.target.value = '';
+  };
+
+  const removeFile = useCallback(() => {
+    setPendingFile(null);
+    setError(null);
+  }, [setPendingFile]);
+
+  return (
+    <div className="attach-container">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".pdf,.jpg,.jpeg,.png,.tiff,.webp"
+        style={{ display: 'none' }}
+        onChange={handleInputChange}
+      />
+
+      {pendingFile ? (
+        <div className="file-pill">
+          {pendingFile.status === 'uploading' ? (
+            <Loader2 size={13} className="spin" />
+          ) : (
+            <FileText size={13} />
+          )}
+          <span className="file-pill-name">{pendingFile.name}</span>
+          {pendingFile.status === 'uploading' && <span className="file-pill-status">Uploading…</span>}
+          {pendingFile.status === 'ready' && <CheckCircle2 size={11} color="#16a34a" />}
+          <button className="file-pill-remove" onClick={removeFile} title="Remove file">×</button>
+        </div>
+      ) : (
+        <button
+          className="mini"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={disabled || uploading}
+          title="Attach a PDF or image document"
+        >
+          {uploading ? <Loader2 size={17} className="spin" /> : <Paperclip size={17} />}
+          Attach
+        </button>
+      )}
+
+      {error && (
+        <div className="attach-error">
+          <AlertCircle size={12} />
+          {error}
+          <button className="voice-error-close" onClick={() => setError(null)}>×</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Composer
+// ─────────────────────────────────────────────────────────────────────────────
+
+function Composer({ query, setQuery, send, pendingFile, setPendingFile, isLoading }) {
+  const textareaRef = useRef(null);
+
+  // Auto-resize textarea
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(ta.scrollHeight, 200) + 'px';
+  }, [query]);
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (!isLoading && query.trim()) send();
+    }
+  };
+
+  const handleVoiceTranscript = useCallback((transcript) => {
+    setQuery(prev => prev ? prev + ' ' + transcript : transcript);
+    textareaRef.current?.focus();
+  }, [setQuery]);
+
+  const canSend = query.trim().length > 0 && !isLoading;
+
+  return (
+    <div className="composer">
+      <textarea
+        ref={textareaRef}
+        value={query}
+        onChange={e => setQuery(e.target.value)}
+        onKeyDown={handleKeyDown}
+        placeholder="Ask anything about BIS…"
+        rows="1"
+        disabled={isLoading}
+      />
+      <div className="composer-row">
+        <div className="composer-tools">
+          <AttachButton
+            pendingFile={pendingFile}
+            setPendingFile={setPendingFile}
+            disabled={isLoading}
+          />
+          <VoiceButton
+            onTranscript={handleVoiceTranscript}
+            disabled={isLoading}
+          />
+        </div>
+        <button
+          className={`send ${!canSend ? 'send-disabled' : ''}`}
+          onClick={() => !isLoading && send()}
+          disabled={!canSend}
+          title={isLoading ? 'Waiting for response…' : 'Send message'}
+        >
+          {isLoading ? <Loader2 size={18} className="spin" /> : <Send size={18} />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+import { ttsService } from './services/ttsService';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TTS Listen button
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ListenButton({ text, messageId }) {
+  const [ttsState, setTtsState] = useState('idle');
+  const idRef = useRef(messageId || Math.random().toString());
+
+  useEffect(() => {
+    const handleStateChange = (state) => {
+      if (ttsService.activeMessageId === idRef.current) {
+        setTtsState(state);
+      } else {
+        setTtsState('idle');
+      }
+    };
+    ttsService.onStateChange = handleStateChange;
+    return () => {
+      if (ttsService.activeMessageId === idRef.current) {
+        ttsService.stop();
+      }
+    };
+  }, []);
+
+  const isSpeakingThis = ttsState === 'speaking' && ttsService.activeMessageId === idRef.current;
+  const isPausedThis = ttsState === 'paused' && ttsService.activeMessageId === idRef.current;
+
+  const handleListen = () => {
+    if (!('speechSynthesis' in window)) return;
+
+    if (isSpeakingThis) {
+      ttsService.pause();
+    } else if (isPausedThis) {
+      ttsService.resume();
+    } else {
+      ttsService.speak(text, idRef.current, () => setTtsState('idle'));
+    }
+  };
+
+  const handleStop = (e) => {
+    e.stopPropagation();
+    ttsService.stop();
+    setTtsState('idle');
+  };
+
+  const isSupported = typeof window !== 'undefined' && 'speechSynthesis' in window;
+
+  return (
+    <div className="listen-btn-group" style={{ display: 'inline-flex', gap: '4px', alignItems: 'center' }}>
+      <button
+        onClick={handleListen}
+        disabled={!isSupported}
+        title={
+          isSpeakingThis
+            ? 'Pause speaking'
+            : isPausedThis
+            ? 'Resume speaking'
+            : 'Listen to response'
+        }
+      >
+        {isSpeakingThis ? <VolumeX size={14} /> : <Volume2 size={14} />}
+        {isSpeakingThis ? 'Pause' : isPausedThis ? 'Resume' : 'Listen'}
+      </button>
+      {(isSpeakingThis || isPausedThis) && (
+        <button
+          onClick={handleStop}
+          className="mini"
+          style={{ padding: '2px 6px', fontSize: '11px' }}
+          title="Stop audio playback"
+        >
+          Stop
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Home page
+// ─────────────────────────────────────────────────────────────────────────────
+
+function Home({ query, setQuery, send, nav, pendingFile, setPendingFile, isLoading }) {
   return (
     <section className="home page">
       <div className="hero">
@@ -325,7 +887,14 @@ function Home({ query, setQuery, send, nav }) {
           Ask about Indian Standards, certification, testing, licensing, documents and compliance — in simple language.
         </p>
 
-        <Composer query={query} setQuery={setQuery} send={send} />
+        <Composer
+          query={query}
+          setQuery={setQuery}
+          send={send}
+          pendingFile={pendingFile}
+          setPendingFile={setPendingFile}
+          isLoading={isLoading}
+        />
 
         <div className="prompt-grid">
           {prompts.map(p => (
@@ -356,35 +925,47 @@ function Home({ query, setQuery, send, nav }) {
   );
 }
 
-function Composer({ query, setQuery, send }) {
-  return (
-    <div className="composer">
-      <textarea
-        value={query}
-        onChange={e => setQuery(e.target.value)}
-        onKeyDown={e => {
-          if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            send();
-          }
-        }}
-        placeholder="Ask anything about BIS…"
-        rows="1"
-      />
-      <div className="composer-row">
-        <div>
-          <button className="mini"><Paperclip size={17} />Attach</button>
-          <button className="mini"><Mic size={17} />Voice</button>
-        </div>
-        <button className="send" onClick={() => send()}>
-          <Send size={18} />
-        </button>
-      </div>
-    </div>
-  );
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// Chat page
+// ─────────────────────────────────────────────────────────────────────────────
 
-function Chat({ messages, query, setQuery, send, mode, setMode, retry }) {
+function Chat({ messages, query, setQuery, send, mode, setMode, retry, pendingFile, setPendingFile, isLoading }) {
+  const messagesEndRef = useRef(null);
+  const messagesContainerRef = useRef(null);
+  const [userScrolled, setUserScrolled] = useState(false);
+
+  // Auto-scroll to bottom when new messages arrive, unless user scrolled up
+  useEffect(() => {
+    if (!userScrolled) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages, userScrolled]);
+
+  const handleScroll = () => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+    setUserScrolled(!isAtBottom);
+  };
+
+  // Scroll to bottom when user sends (reset scroll lock)
+  const handleSend = useCallback((text) => {
+    setUserScrolled(false);
+    send(text);
+  }, [send]);
+
+  const copyToClipboard = useCallback((text) => {
+    navigator.clipboard?.writeText(text || '').catch(() => {
+      // Fallback for browsers without clipboard API
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    });
+  }, []);
+
   return (
     <section className="chat page">
       <div className="chat-header">
@@ -399,6 +980,7 @@ function Chat({ messages, query, setQuery, send, mode, setMode, retry }) {
               className={mode === x ? 'selected' : ''}
               onClick={() => setMode(x)}
               key={x}
+              disabled={isLoading}
             >
               {x}
             </button>
@@ -406,79 +988,138 @@ function Chat({ messages, query, setQuery, send, mode, setMode, retry }) {
         </div>
       </div>
 
-      <div className="messages">
+      <div
+        className="messages"
+        ref={messagesContainerRef}
+        onScroll={handleScroll}
+      >
         {messages.length === 0 ? (
           <div className="empty">
             <MessageSquare size={34} />
             <h3>Start a BIS conversation</h3>
-            <p>Ask a question and your RAG-backed answer will appear here.</p>
+            <p>Ask a question and your answer will appear here.</p>
           </div>
         ) : (
           messages.map((m, i) => (
-            <div className={'message ' + m.role} key={i}>
-              <div className="avatar">{m.role === 'user' ? 'You' : 'BIS'}</div>
-              <div className="bubble">
-                {m.loading ? (
-                  <div className="typing">
-                    <span /><span /><span />Searching BIS knowledge…
-                  </div>
-                ) : (
-                  <div className="message-text">{m.text}</div>
-                )}
-
-                {m.error && (
-                  <div style={{ marginTop: '8px' }}>
-                    <button className="mini" onClick={retry}>Retry Question</button>
-                  </div>
-                )}
-
-                {m.role === 'assistant' && !m.loading && !m.error && (
-                  <div className="answer-tools">
-                    <button onClick={() => navigator.clipboard?.writeText(m.text || '')}>
-                      <Copy size={14} />Copy
-                    </button>
-                    <button onClick={() => {
-                      if ('speechSynthesis' in window) {
-                        window.speechSynthesis.cancel();
-                        window.speechSynthesis.speak(new SpeechSynthesisUtterance(m.text || ''));
-                      }
-                    }}>
-                      <Volume2 size={14} />Listen
-                    </button>
-                  </div>
-                )}
-
-                {m.role === 'assistant' && !m.loading && m.sources?.length > 0 && (
-                  <div className="sources-list">
-                    <div className="sources-title">
-                      <CheckCircle2 size={14} />BIS sources
-                    </div>
-                    {m.sources.map((s, j) => (
-                      <div className="source" key={j}>
-                        <b>{s.title || s.document_id || 'BIS Standard'}</b>
-                        <span>Clause / Page {s.clause || '—'} · {s.snippet || ''}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {m.role === 'assistant' && !m.loading && typeof m.relevance === 'number' && (
-                  <div className="confidence">
-                    Relevance: {Math.round(m.relevance * 100)}%
-                  </div>
-                )}
-              </div>
-            </div>
+            <MessageBubble
+              key={i}
+              message={m}
+              onCopy={copyToClipboard}
+              onRetry={retry}
+            />
           ))
         )}
+        <div ref={messagesEndRef} />
       </div>
 
+      {userScrolled && (
+        <button
+          className="scroll-to-bottom"
+          onClick={() => {
+            setUserScrolled(false);
+            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+          }}
+        >
+          ↓ Latest message
+        </button>
+      )}
+
       <div className="chat-composer">
-        <Composer query={query} setQuery={setQuery} send={send} />
+        <Composer
+          query={query}
+          setQuery={setQuery}
+          send={handleSend}
+          pendingFile={pendingFile}
+          setPendingFile={setPendingFile}
+          isLoading={isLoading}
+        />
       </div>
     </section>
   );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Message bubble
+// ─────────────────────────────────────────────────────────────────────────────
+
+function MessageBubble({ message: m, onCopy, onRetry }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    onCopy(m.text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className={'message ' + m.role}>
+      <div className="avatar">{m.role === 'user' ? 'You' : 'BIS'}</div>
+      <div className={`bubble ${m.error ? 'bubble-error' : ''}`}>
+        {m.loading ? (
+          <div className="typing">
+            <span /><span /><span />Searching BIS knowledge…
+          </div>
+        ) : m.role === 'assistant' ? (
+          <MarkdownContent text={m.text} />
+        ) : (
+          <div className="message-text">
+            {m.text}
+            {m.attachmentName && (
+              <div className="msg-attachment">
+                <FileText size={12} />
+                <span>{m.attachmentName}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {m.error && (
+          <div style={{ marginTop: '10px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <button className="mini" onClick={onRetry}>
+              Retry Question
+            </button>
+          </div>
+        )}
+
+        {m.role === 'assistant' && !m.loading && !m.error && (
+          <div className="answer-tools">
+            <button onClick={handleCopy}>
+              <Copy size={14} />{copied ? 'Copied!' : 'Copy'}
+            </button>
+            <ListenButton text={m.text} messageId={m.id || m.timestamp || m.text?.slice(0, 20)} />
+          </div>
+        )}
+
+        {m.role === 'assistant' && !m.loading && (m.sources?.length > 0) && (
+          <div className="sources-list">
+            <div className="sources-title">
+              <CheckCircle2 size={14} />BIS sources
+            </div>
+            {m.sources.map((s, j) => (
+              <div className="source" key={j}>
+                <b>{s.title || s.document_id || 'BIS Standard'}</b>
+                <span>
+                  {s.clause ? `Clause/Page ${s.clause}` : ''}
+                  {s.snippet ? ` · ${s.snippet.slice(0, 120)}${s.snippet.length > 120 ? '…' : ''}` : ''}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {m.role === 'assistant' && !m.loading && typeof m.relevance === 'number' && (
+          <div className="confidence">
+            Relevance: {Math.round(m.relevance * 100)}%
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Guide page
+// ─────────────────────────────────────────────────────────────────────────────
 
 function Guide({ onContinue }) {
   const [step, setStep] = useState(1);
@@ -505,22 +1146,11 @@ function Guide({ onContinue }) {
     const need = answers[3] || 'General guidance';
     const next = answers[4] || 'Show me the next steps';
 
-    const generated = {
+    setReport({
       goal, product, need, next,
       summary: `You are looking for help with ${goal.toLowerCase()} for ${product.toLowerCase()}, mainly around ${need.toLowerCase()}.`,
-      steps: [
-        `Clarify the exact BIS requirement for ${product.toLowerCase()}.`,
-        `Identify the applicable Indian Standard, scheme, testing or compliance route.`,
-        `Prepare documents relevant to your need: ${need.toLowerCase()}.`,
-        `Use BIS Sahayta chat for the specific requirement or process.`
-      ],
-      important: [
-        `Your answers are a starting point, not a final compliance decision.`,
-        `Exact requirements depend on the product and applicable standard.`
-      ],
       chatContext: `Please guide me on ${goal} for ${product} focusing on ${need}.`
-    };
-    setReport(generated);
+    });
   };
 
   if (report) {
@@ -585,6 +1215,10 @@ function Guide({ onContinue }) {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// History page
+// ─────────────────────────────────────────────────────────────────────────────
+
 function HistoryPage({ sessions, loadSession, deleteSession }) {
   return (
     <section className="history-page page">
@@ -602,7 +1236,7 @@ function HistoryPage({ sessions, loadSession, deleteSession }) {
             <div className="history-card" key={c.id}>
               <div className="history-icon"><MessageSquare /></div>
               <div className="history-content" onClick={() => loadSession(c.id)} style={{ cursor: 'pointer' }}>
-                <b>{c.preview}</b>
+                <b>{(c.preview || 'Chat session').slice(0, 60)}</b>
                 <span>{new Date(c.updated_at).toLocaleString()}</span>
               </div>
               <button className="icon-btn danger" onClick={() => deleteSession(c.id)}>
@@ -616,14 +1250,30 @@ function HistoryPage({ sessions, loadSession, deleteSession }) {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Settings page
+// ─────────────────────────────────────────────────────────────────────────────
+
 function SettingsPage({ dark, setDark, settings, setSettings }) {
   const [backendStatus, setBackendStatus] = useState('Checking...');
+  const [backendDetails, setBackendDetails] = useState(null);
 
   useEffect(() => {
     apiFetch('/api/health')
-      .then(d => setBackendStatus(d.status === 'ok' ? 'Backend connected' : 'Degraded'))
+      .then(d => {
+        setBackendStatus(d.status === 'ok' ? 'Backend connected' : 'Degraded');
+      })
       .catch(() => setBackendStatus('Disconnected'));
+
+    apiFetch('/ready')
+      .then(d => setBackendDetails(d.checks))
+      .catch(() => {});
   }, []);
+
+  const voiceSupported = typeof window !== 'undefined' &&
+    ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
+
+  const ttsSupported = typeof window !== 'undefined' && 'speechSynthesis' in window;
 
   return (
     <section className="settings-page page">
@@ -641,10 +1291,31 @@ function SettingsPage({ dark, setDark, settings, setSettings }) {
           </button>
         </Setting>
 
+        <Setting title="Text size" desc="Use larger text for better readability.">
+          <button className="toggle" onClick={() => setSettings(s => ({ ...s, large: !s.large }))}>
+            <span className={settings.large ? 'on' : ''} />
+            {settings.large ? 'Large text' : 'Normal text'}
+          </button>
+        </Setting>
+
         <Setting title="Backend connection" desc="Status from GET /api/health">
           <span className={`status ${backendStatus === 'Backend connected' ? 'connected' : 'error'}`}>
             <span />
             {backendStatus}
+          </span>
+        </Setting>
+
+        <Setting title="Voice input (STT)" desc="Speech-to-text using browser Web Speech API.">
+          <span className={`status ${voiceSupported ? 'connected' : 'error'}`}>
+            <span />
+            {voiceSupported ? 'Supported' : 'Not supported (use Chrome/Edge)'}
+          </span>
+        </Setting>
+
+        <Setting title="Text-to-speech (TTS)" desc="Listen to AI responses using browser speech synthesis.">
+          <span className={`status ${ttsSupported ? 'connected' : 'error'}`}>
+            <span />
+            {ttsSupported ? 'Supported' : 'Not supported in this browser'}
           </span>
         </Setting>
       </div>
@@ -663,5 +1334,9 @@ function Setting({ title, desc, children }) {
     </div>
   );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mount
+// ─────────────────────────────────────────────────────────────────────────────
 
 createRoot(document.getElementById('root')).render(<App />);

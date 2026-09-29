@@ -251,31 +251,46 @@ class LLMService:
 
         style_instruction = ""
         if style == "short":
-            style_instruction = "Give concise, direct, bulleted answers. Keep responses under 3-4 sentences."
+            style_instruction = "Be concise and direct. Answer in 2-4 sentences maximum. Use plain language."
         elif style == "technical":
-            style_instruction = "Provide a deep technical and regulatory response citing exact clause numbers, testing specs, and formal standards."
+            style_instruction = "Provide a detailed technical response. Cite exact clause numbers, testing specs, and formal standards. Use structured sections where helpful."
         else:
-            style_instruction = "Explain in plain, clear, accessible language easy to understand for non-experts."
+            style_instruction = "Explain clearly in plain language. Be thorough but not verbose. Answer the question directly."
 
         context = "\n\n---\n\n".join(context_chunks) if context_chunks else ""
         ctx_section = f"\nSESSION CONTEXT:\n{session_context}\n" if session_context else ""
-        rag_section = f"\nRELEVANT STANDARDS/DOCUMENTS:\n{context}\n" if context else ""
+        rag_section = f"\nRELEVANT BIS DOCUMENTS:\n{context}\n" if context else ""
         hist_section = f"\nCONVERSATION HISTORY:\n{history_text}\n" if history_text else ""
-        grounding = (
-            "Use the numbered documents below as your primary source and cite them inline like [1] or [2]. If something is not covered by them, say it comes from general knowledge and should be verified against the official standard. Never invent clause numbers."
-            if context
-            else "No indexed BIS document matched this question, so answer from general knowledge and state clearly that it is not verified against an indexed BIS document."
-        )
+
+        if context:
+            grounding = (
+                "Use the numbered documents above as your primary source. "
+                "Cite them inline with [1], [2], etc. "
+                "If a fact is not in the documents, say so clearly. "
+                "Do NOT invent clause numbers or standard IDs."
+            )
+        else:
+            grounding = (
+                "No indexed BIS document matched this question. "
+                "Answer from general knowledge and clearly state this is not verified against an indexed BIS document."
+            )
 
         return textwrap.dedent(f"""
-            You are a knowledgeable BIS Compliance & Standards Assistant.
+            You are a knowledgeable BIS (Bureau of Indian Standards) compliance assistant.
             {style_instruction}
-            You help users understand Indian standards, QCOs, certification requirements, and compliance.
-            Do NOT fabricate standards, regulations, or compliance results.
             {grounding}
+
+            Rules:
+            - Answer the user's question directly. Do not start with a preamble.
+            - Do not say "Certainly!" or "Great question!" or similar meta-commentary.
+            - Do not use excessive headings for simple answers.
+            - Do not repeat information already stated.
+            - Do not fabricate standards, regulations, or compliance results.
+            - Format bullet points and numbered lists for multi-step processes.
+            - Keep the response focused and relevant.
             {ctx_section}{rag_section}{hist_section}
-            CURRENT QUESTION:
+            USER QUESTION:
             {question}
 
-            RESPONSE:
+            ANSWER:
         """).strip()

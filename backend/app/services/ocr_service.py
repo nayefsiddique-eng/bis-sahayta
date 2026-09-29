@@ -85,24 +85,36 @@ class TesseractProvider(OCRProvider):
 # ---------------------------------------------------------------------------
 
 async def extract_text_from_pdf(pdf_bytes: bytes) -> str:
-    """Extract embedded text from a PDF using PyMuPDF (fitz). No OCR needed."""
+    """Extract embedded text from a PDF using pdfplumber, PyMuPDF, or pdfminer.six."""
+    # 1. Try pdfplumber
     try:
-        import pymupdf as fitz  # type: ignore
-    except ImportError:
-        try:
-            import fitz  # type: ignore (older PyMuPDF API)
-        except ImportError:
-            return ""
+        import pdfplumber
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            pages_text = [page.extract_text() or "" for page in pdf.pages]
+            text = "\n\n".join(pages_text).strip()
+            if text:
+                return text
+    except Exception as exc:
+        logger.debug(f"pdfplumber extraction failed: {exc}")
 
+    # 2. Try pdfminer.six
     try:
+        from pdfminer.high_level import extract_text as pdfminer_extract_text
+        text = pdfminer_extract_text(io.BytesIO(pdf_bytes))
+        if text and text.strip():
+            return text.strip()
+    except Exception as exc:
+        logger.debug(f"pdfminer extraction failed: {exc}")
+
+    # 3. Try PyMuPDF (fitz)
+    try:
+        import fitz  # type: ignore
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        pages_text = []
-        for page in doc:
-            pages_text.append(page.get_text())
+        pages_text = [page.get_text() for page in doc]
         doc.close()
         return "\n\n".join(pages_text).strip()
     except Exception as exc:
-        logger.debug(f"PDF text extraction failed (may not be a valid PDF): {exc}")
+        logger.debug(f"PyMuPDF extraction failed: {exc}")
         return ""
 
 

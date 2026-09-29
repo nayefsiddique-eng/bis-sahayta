@@ -273,5 +273,5 @@ def test_build_chat_prompt_grounding():
     from app.services.llm_service import LLMService
     with_ctx = LLMService.build_chat_prompt("q", ["[1] IS 2082, page 1: text"], [], style="simple")
     no_ctx = LLMService.build_chat_prompt("q", [], [], style="simple")
-    assert "cite them inline" in with_ctx
+    assert "Cite them inline" in with_ctx
     assert "not verified" in no_ctx

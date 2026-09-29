@@ -44,10 +44,15 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    import logging
+    logging.getLogger("bis_backend").error(
+        f"Unhandled exception on {request.method} {request.url.path}: {exc}",
+        exc_info=True,
+    )
     content = ErrorResponse(
         error_code="INTERNAL_SERVER_ERROR",
-        message="An unexpected server error occurred.",
-        detail=str(exc)
+        message="An unexpected server error occurred. Please try again.",
+        detail=None  # Never expose raw exception text to users
     ).model_dump()
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
