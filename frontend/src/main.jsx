@@ -635,7 +635,7 @@ function SettingsPage({ dark, setDark, settings, setSettings }) {
           </button>
         </Setting>
 
-        <Setting title="Backend connection" desc="Status from GET /health">
+        <Setting title="Backend connection" desc="Status from GET /api/health">
           <span className={`status ${backendStatus === 'Backend connected' ? 'connected' : 'error'}`}>
             <span />
             {backendStatus}
