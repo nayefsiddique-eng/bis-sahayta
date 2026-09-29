@@ -614,7 +614,7 @@ function SettingsPage({ dark, setDark, settings, setSettings }) {
   const [backendStatus, setBackendStatus] = useState('Checking...');
 
   useEffect(() => {
-    apiFetch('/health')
+    apiFetch('/api/health')
       .then(d => setBackendStatus(d.status === 'ok' ? 'Backend connected' : 'Degraded'))
       .catch(() => setBackendStatus('Disconnected'));
   }, []);
