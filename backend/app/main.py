@@ -77,6 +77,7 @@ app.include_router(tasks.router)
 # -- Health & Readiness
 
 @app.get("/health", tags=["ops"])
+@app.get("/api/health", tags=["ops"], include_in_schema=False)
 def health_check():
     """Basic liveness check. Always returns 200 if the process is running."""
     return {"status": "ok", "service": "bis-compliance-backend"}

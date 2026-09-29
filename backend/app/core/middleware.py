@@ -36,7 +36,7 @@ class RequestTracingAndAuthMiddleware(BaseHTTPMiddleware):
 
         # Bypass auth & rate-limit for health, readiness, and OpenAPI docs
         path = request.url.path
-        is_public = path in ["/health", "/ready", "/docs", "/openapi.json", "/redoc"]
+        is_public = path in ["/health", "/api/health", "/ready", "/docs", "/openapi.json", "/redoc"]
 
         try:
             # 2. API Key Auth (Step 10)
