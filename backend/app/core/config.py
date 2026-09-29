@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     # LLM providers
     LLM_PROVIDER: str = "mock"  # gemini | ollama | mock
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-3.8-flash"
+    GEMINI_MODEL: str = "gemini-3.5-flash"
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "llama3"
 
