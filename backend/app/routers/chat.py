@@ -6,6 +6,7 @@ and returns both {reply, sources} and {answer, citations} schema formats.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Optional, Literal
 
@@ -230,7 +231,8 @@ async def chat(body: ChatRequest):
 
     # 6. Check response cache
     reply_en = None
-    cache_key = make_cache_key(f"{message_en}_{body.style}", intent.value, prefix="chat")
+    _rag_fp = hashlib.sha1("".join(rag_texts).encode("utf-8")).hexdigest()[:12]
+    cache_key = make_cache_key(f"{message_en}_{body.style}_{_rag_fp}", intent.value, prefix="chat")
     if not history and not session_context_str:
         cached = get_cache().get(cache_key)
         if cached:
@@ -263,7 +265,7 @@ async def chat(body: ChatRequest):
                 )
             raise
 
-        if not history and not session_context_str and not rag_used:
+        if not history and not session_context_str:
             get_cache().set(cache_key, reply_en, ttl=300)
 
     # 8. Translate reply back if needed
