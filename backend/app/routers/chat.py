@@ -255,9 +255,10 @@ async def chat(body: ChatRequest):
                 import re as _re
                 _m = _re.search(r"retry in ([0-9.]+)s", _msg)
                 _retry = int(float(_m.group(1))) + 1 if _m else 30
+                logger.warning(f"LLM rate limited: {_msg[:300]}")
                 raise HTTPException(
                     status_code=429,
-                    detail={"error_code": "LLM_RATE_LIMITED", "message": "The AI service is rate limited. Please retry shortly.", "retry_after_seconds": _retry},
+                    detail={"error_code": "LLM_RATE_LIMITED", "message": "The AI service is rate limited. Please retry shortly.", "retry_after_seconds": _retry, "quota_id": (_re.search(r'quota_id: "([^"]+)"', _msg) or [None, None])[1]},
                     headers={"Retry-After": str(_retry)},
                 )
             raise
