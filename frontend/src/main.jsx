@@ -75,7 +75,10 @@ function App() {
           role: m.role,
           text: m.content,
           sources: m.metadata?.sources || [],
-          confidence: m.metadata?.confidence,
+          relevance:
+            typeof m.metadata?.relevance === 'number'
+              ? m.metadata.relevance
+              : m.metadata?.confidence,
         }))
       );
       setPage('chat');
