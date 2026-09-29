@@ -83,26 +83,50 @@ class GeminiProvider(LLMProvider):
 
     async def complete(self, prompt: str, *, system: str = "", max_tokens: int = 1024) -> str:
         import asyncio
+        import re
         import google.generativeai as genai  # type: ignore
 
         full_prompt = f"{system}\n\n{prompt}" if system else prompt
+        loop = asyncio.get_running_loop()
+        attempts = 3
+        max_wait = 25
 
-        try:
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: self._model.generate_content(
-                    full_prompt,
-                    generation_config=genai.types.GenerationConfig(max_output_tokens=max_tokens),
-                ),
-            )
-            return response.text
-        except Exception as exc:
-            logger.error(f"GeminiProvider API execution error: {exc}")
-            raise HTTPException(
-                status_code=502,
-                detail={"error_code": "LLM_PROVIDER_ERROR", "message": f"Gemini API failure: {str(exc)}"}
-            ) from exc
+        for attempt in range(attempts):
+            try:
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: self._model.generate_content(
+                        full_prompt,
+                        generation_config=genai.types.GenerationConfig(max_output_tokens=max_tokens),
+                    ),
+                )
+                return response.text
+            except Exception as exc:
+                msg = str(exc)
+                is_429 = (
+                    "429" in msg
+                    or "RESOURCE_EXHAUSTED" in msg
+                    or "ResourceExhausted" in type(exc).__name__
+                    or "quota" in msg.lower()
+                )
+                if is_429:
+                    m = re.search(r"retry[^0-9]{0,30}(\d+)", msg, re.I)
+                    wait = int(m.group(1)) + 1 if m else 2 ** (attempt + 1)
+                    if attempt < attempts - 1 and wait <= max_wait:
+                        logger.warning(f"Gemini 429, retrying in {wait}s (attempt {attempt + 1}/{attempts})")
+                        await asyncio.sleep(wait)
+                        continue
+                    logger.error(f"Gemini rate limit exhausted: {exc}")
+                    raise HTTPException(
+                        status_code=429,
+                        detail={"error_code": "LLM_RATE_LIMITED", "message": "Gemini rate limit reached. Please retry shortly.", "retry_after": wait},
+                        headers={"Retry-After": str(wait)},
+                    ) from exc
+                logger.error(f"GeminiProvider API execution error: {exc}")
+                raise HTTPException(
+                    status_code=502,
+                    detail={"error_code": "LLM_PROVIDER_ERROR", "message": f"Gemini API failure: {str(exc)}"},
+                ) from exc
 
 
 # ---------------------------------------------------------------------------
