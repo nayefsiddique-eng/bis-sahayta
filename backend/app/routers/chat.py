@@ -253,7 +253,21 @@ async def chat(body: ChatRequest):
             session_context=session_context_str,
             style=body.style or "simple",
         )
-        reply_en = await LLMService.complete(prompt)
+        try:
+            reply_en = await LLMService.complete(prompt)
+        except HTTPException as _exc:
+            _d = _exc.detail if isinstance(_exc.detail, dict) else {}
+            _msg = str(_d.get("message", ""))
+            if _exc.status_code == 502 and ("429" in _msg or "quota" in _msg.lower()):
+                import re as _re
+                _m = _re.search(r"retry in ([0-9.]+)s", _msg)
+                _retry = int(float(_m.group(1))) + 1 if _m else 30
+                raise HTTPException(
+                    status_code=429,
+                    detail={"error_code": "LLM_RATE_LIMITED", "message": "The AI service is rate limited. Please retry shortly.", "retry_after_seconds": _retry},
+                    headers={"Retry-After": str(_retry)},
+                )
+            raise
 
         if not history and not session_context_str and not rag_used:
             get_cache().set(cache_key, reply_en, ttl=300)
