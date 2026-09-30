@@ -275,15 +275,37 @@ async def test_circuit_breaker_resets_after_gemini_success():
     assert router._gemini_cooldown_until == 0.0
 
 
+@pytest.mark.asyncio
+async def test_explicit_model_failure_no_fallback():
+    """When an explicit model (e.g. gemma4) fails, it must raise directly without falling back."""
+    gemini = _make_gemini("Gemini response")
+    gemma4 = _make_local(
+        "gemma4",
+        HTTPException(status_code=503, detail={"error_code": "LLM_PROVIDER_OFFLINE", "message": "Gemma offline"}),
+    )
+    qwen = _make_local("qwen", "Qwen response")
+    router = make_router(gemini_provider=gemini, local_cfg={"gemma4": gemma4, "qwen": qwen})
+
+    with patch.object(llm_mod, "get_llm_provider", return_value=gemini):
+        with pytest.raises(HTTPException) as exc_info:
+            await router.generate("q", model="gemma4")
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail["error_code"] == "LLM_PROVIDER_OFFLINE"
+    # Neither Gemini nor Qwen should have been called
+    gemini.complete.assert_not_called()
+    qwen.complete.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
-# LLMRouter — non-transient error is NOT swallowed
+# LLMRouter — non-transient error is NOT swallowed & does NOT trip circuit breaker
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_non_transient_error_propagates_immediately():
-    """A 400 Bad Request from Gemini must NOT trigger fallback."""
+    """A 400 Bad Request from Gemini must NOT trigger fallback and MUST NOT trip the circuit breaker."""
     gemini = _make_gemini(
-        HTTPException(status_code=400, detail={"error_code": "BAD_REQUEST", "message": "bad"})
+        HTTPException(status_code=400, detail={"error_code": "BAD_REQUEST", "message": "bad request"})
     )
     gemma4 = _make_local("gemma4", "should not be reached")
     router = make_router(gemini_provider=gemini, local_cfg={"gemma4": gemma4})
@@ -294,6 +316,8 @@ async def test_non_transient_error_propagates_immediately():
 
     assert exc_info.value.status_code == 400
     gemma4.complete.assert_not_called()
+    # Circuit breaker must NOT be tripped
+    assert router._gemini_cooldown_until == 0.0
 
 
 # ---------------------------------------------------------------------------
