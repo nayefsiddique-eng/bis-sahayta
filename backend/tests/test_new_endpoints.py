@@ -484,9 +484,9 @@ def test_chat_reuses_cached_reply_for_identical_question(monkeypatch):
 
     async def counting(*args, **kwargs):
         calls["n"] += 1
-        return "cached reply"
+        return {"text": "cached reply", "model_used": "mock", "fallback_used": False, "fallback_reason": None}
 
-    monkeypatch.setattr(chat_mod.LLMService, "complete", staticmethod(counting))
+    monkeypatch.setattr(chat_mod.get_llm_router(), "generate", counting)
     q = f"Explain BIS marking rules {uuid.uuid4()}"
     r1 = client.post("/api/chat", json={"query": q}, headers=AUTH)
     r2 = client.post("/api/chat", json={"query": q}, headers=AUTH)
@@ -501,11 +501,12 @@ def test_chat_quota_error_maps_to_429(monkeypatch):
 
     async def boom(*args, **kwargs):
         raise HTTPException(
-            status_code=502,
-            detail={"error_code": "LLM_PROVIDER_ERROR", "message": 'Gemini API failure: 429 quota. quota_id: "TestQuota-FreeTier" Please retry in 4.2s.'},
+            status_code=429,
+            detail={"error_code": "LLM_RATE_LIMITED", "message": "Gemini rate limit reached.", "retry_after_seconds": 5, "quota_id": "TestQuota-FreeTier"},
+            headers={"Retry-After": "5"},
         )
 
-    monkeypatch.setattr(chat_mod.LLMService, "complete", staticmethod(boom))
+    monkeypatch.setattr(chat_mod.get_llm_router(), "generate", boom)
     resp = client.post("/api/chat", json={"query": f"quota test {uuid.uuid4()}"}, headers=AUTH)
     assert resp.status_code == 429
     assert resp.headers.get("retry-after") == "5"

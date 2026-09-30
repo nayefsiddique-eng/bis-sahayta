@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field, model_validator
 from app.services.intent_classifier import classify_intent
 from app.services.rag_service import RAGService
 from app.core.config import settings
-from app.services.llm_service import LLMService
+from app.services.llm_service import LLMService, get_llm_router
 from app.services.session_db import (
     create_session,
     get_session,
@@ -49,6 +49,9 @@ class ChatRequest(BaseModel):
     n_results: Optional[int] = Field(5, description="Number of RAG results")
     style: Optional[Literal["simple", "short", "technical"]] = Field("simple", description="Response style mode")
     document_id: Optional[str] = Field(None, description="Optional uploaded document ID to focus analysis/RAG on")
+    model: Optional[Literal["auto", "gemini", "gemma4", "qwen"]] = Field(
+        "auto", description="LLM model to use. 'auto' tries Gemini first then falls back."
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -73,6 +76,9 @@ class ChatResponse(BaseModel):
     citations: list[dict] = []  # Frontend alias for sources
     translation_unavailable: bool = False
     response_lang: str = "en"
+    model_used: str = "gemini"
+    fallback_used: bool = False
+    fallback_reason: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -296,7 +302,11 @@ async def chat(body: ChatRequest):
             logger.debug(f"Chat cache HIT: {cache_key}")
             reply_en = cached
 
-    # 7. LLM completion
+    # 7. LLM completion via router (supports Gemini → Gemma4 → Qwen fallback)
+    model_used = "mock"
+    fallback_used = False
+    fallback_reason: Optional[str] = None
+
     if reply_en is None:
         prompt = LLMService.build_chat_prompt(
             question=message_en,
@@ -305,25 +315,21 @@ async def chat(body: ChatRequest):
             session_context=session_context_str,
             style=body.style or "simple",
         )
-        try:
-            reply_en = await LLMService.complete(prompt)
-        except HTTPException as _exc:
-            _d = _exc.detail if isinstance(_exc.detail, dict) else {}
-            _msg = str(_d.get("message", ""))
-            if _exc.status_code == 502 and ("429" in _msg or "quota" in _msg.lower()):
-                import re as _re
-                _m = _re.search(r"retry in ([0-9.]+)s", _msg)
-                _retry = int(float(_m.group(1))) + 1 if _m else 30
-                logger.warning(f"LLM rate limited: {_msg[:300]}")
-                raise HTTPException(
-                    status_code=429,
-                    detail={"error_code": "LLM_RATE_LIMITED", "message": "The AI service is rate limited. Please retry shortly.", "retry_after_seconds": _retry, "quota_id": (_re.search(r'quota_id: "([^"]+)"', _msg) or [None, None])[1]},
-                    headers={"Retry-After": str(_retry)},
-                )
-            raise
+        router_result = await get_llm_router().generate(
+            prompt,
+            model=body.model or "auto",
+            max_tokens=1024,
+        )
+        reply_en = router_result["text"]
+        model_used = router_result["model_used"]
+        fallback_used = router_result["fallback_used"]
+        fallback_reason = router_result["fallback_reason"]
 
         if not history and not session_context_str:
             get_cache().set(cache_key, reply_en, ttl=300)
+    else:
+        # Cache hit — attribute to configured provider name
+        model_used = settings.LLM_DEFAULT_MODEL or "gemini"
 
     # 8. Translate reply back if needed
     reply_final = reply_en
@@ -355,4 +361,7 @@ async def chat(body: ChatRequest):
         citations=formatted_sources,
         translation_unavailable=translation_unavailable,
         response_lang=response_lang,
+        model_used=model_used,
+        fallback_used=fallback_used,
+        fallback_reason=fallback_reason,
     )

@@ -1,14 +1,18 @@
 """
 LLM Service with provider abstraction.
-Providers: GeminiProvider, OllamaProvider, MockProvider.
+Providers: GeminiProvider, OllamaProvider, LocalOpenAIProvider, MockProvider.
 Selection driven by settings.LLM_PROVIDER env var.
+Multi-model routing (LLMRouter) adds Gemma4/Qwen fallback and circuit breaker.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import re
 import textwrap
+import time
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Literal, Optional
 
 import httpx
 from fastapi import HTTPException
@@ -172,6 +176,350 @@ class OllamaProvider(LLMProvider):
                 status_code=502,
                 detail={"error_code": "LLM_PROVIDER_ERROR", "message": f"Ollama error: {str(exc)}"}
             ) from exc
+
+
+# ---------------------------------------------------------------------------
+# LocalOpenAIProvider  — generic OpenAI-compatible endpoint (Gemma4, Qwen, …)
+# ---------------------------------------------------------------------------
+
+_THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_think_tags(text: str) -> str:
+    """Remove <think>…</think> reasoning blocks produced by some local models."""
+    return _THINK_TAG_RE.sub("", text).strip()
+
+
+class LocalOpenAIProvider(LLMProvider):
+    """
+    Generic provider for any OpenAI-compatible /v1/chat/completions endpoint
+    (Ollama, llama.cpp llama-server, vLLM, LM Studio, …).
+
+    If base_url or model_name are empty the provider marks itself unconfigured
+    and raises a friendly 503 rather than crashing at startup.
+    """
+
+    def __init__(self, key: str, base_url: str, model_name: str, api_key: str = "") -> None:
+        self._key = key                   # "gemma4" | "qwen" etc.
+        self._base_url = base_url.rstrip("/") if base_url else ""
+        self._model_name = model_name
+        self._api_key = api_key
+        self._configured = bool(self._base_url and self._model_name)
+        if not self._configured:
+            logger.warning(
+                f"LocalOpenAIProvider '{key}': base_url or model_name not set — "
+                "provider will be treated as unavailable."
+            )
+
+    @property
+    def name(self) -> str:
+        return self._key
+
+    @property
+    def available(self) -> bool:
+        return self._configured
+
+    async def complete(self, prompt: str, *, system: str = "", max_tokens: int = 1024) -> str:
+        if not self._configured:
+            raise HTTPException(
+                status_code=503,
+                detail={"error_code": "LLM_NOT_CONFIGURED", "message": f"Model '{self._key}' is not configured."},
+            )
+
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+
+        payload = {
+            "model": self._model_name,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "stream": False,
+        }
+
+        timeout = settings.LLM_REQUEST_TIMEOUT_SECONDS
+        try:
+            async with httpx.AsyncClient(timeout=float(timeout)) as client:
+                resp = await client.post(
+                    f"{self._base_url}/chat/completions",
+                    json=payload,
+                    headers=headers,
+                )
+                if resp.status_code == 429:
+                    raise HTTPException(
+                        status_code=429,
+                        detail={"error_code": "LLM_RATE_LIMITED", "message": f"Local model '{self._key}' returned 429."},
+                    )
+                if resp.status_code >= 500:
+                    raise HTTPException(
+                        status_code=502,
+                        detail={"error_code": "LLM_PROVIDER_ERROR", "message": f"Local model '{self._key}' server error {resp.status_code}."},
+                    )
+                resp.raise_for_status()
+                data = resp.json()
+                text = data["choices"][0]["message"]["content"]
+                return _strip_think_tags(text)
+        except HTTPException:
+            raise
+        except httpx.ConnectError as exc:
+            logger.warning(f"LocalOpenAIProvider '{self._key}' connect error: {exc}")
+            raise HTTPException(
+                status_code=503,
+                detail={"error_code": "LLM_PROVIDER_OFFLINE", "message": f"Cannot connect to '{self._key}' at {self._base_url}."},
+            ) from exc
+        except (httpx.TimeoutException, asyncio.TimeoutError) as exc:
+            logger.warning(f"LocalOpenAIProvider '{self._key}' timeout: {exc}")
+            raise HTTPException(
+                status_code=504,
+                detail={"error_code": "LLM_TIMEOUT", "message": f"'{self._key}' timed out after {timeout}s."},
+            ) from exc
+        except Exception as exc:
+            logger.error(f"LocalOpenAIProvider '{self._key}' unexpected error: {exc}")
+            raise HTTPException(
+                status_code=502,
+                detail={"error_code": "LLM_PROVIDER_ERROR", "message": f"'{self._key}' error: {str(exc)}"},
+            ) from exc
+
+
+# ---------------------------------------------------------------------------
+# LLMRouter — circuit breaker + semaphore + auto-fallback
+# ---------------------------------------------------------------------------
+
+ModelKey = Literal["auto", "gemini", "gemma4", "qwen"]
+
+_FALLBACK_STATUSES = {429, 502, 503, 504}  # statuses that trigger fallback
+_FALLBACK_CODES = {
+    "LLM_RATE_LIMITED", "LLM_PROVIDER_ERROR", "LLM_PROVIDER_OFFLINE",
+    "LLM_TIMEOUT", "LLM_DEPENDENCY_ERROR",
+}
+
+
+def _is_fallback_eligible(exc: HTTPException) -> bool:
+    """True iff this error is a transient/availability error worth trying another model."""
+    if exc.status_code not in _FALLBACK_STATUSES:
+        return False
+    detail = exc.detail if isinstance(exc.detail, dict) else {}
+    code = detail.get("error_code", "")
+    # Never fall back on config errors — the user needs to fix those.
+    if code == "LLM_CONFIG_ERROR":
+        return False
+    return True
+
+
+class LLMRouter:
+    """
+    Routes LLM requests across Gemini and configured local models.
+
+    - auto:   Gemini first, then LLM_FALLBACK_ORDER.
+    - gemini/gemma4/qwen: explicit choice; returns error on failure (no silent fallback).
+    - Circuit breaker: skips Gemini for LLM_COOLDOWN_SECONDS after 429/quota errors.
+    - Concurrency limiter: semaphore on local models to protect the GPU.
+    """
+
+    def __init__(self) -> None:
+        # Build local provider map (never crash if unconfigured)
+        self._local: dict[str, LocalOpenAIProvider] = {
+            "gemma4": LocalOpenAIProvider(
+                key="gemma4",
+                base_url=settings.GEMMA4_BASE_URL,
+                model_name=settings.GEMMA4_MODEL_NAME,
+                api_key=settings.GEMMA4_API_KEY,
+            ),
+            "qwen": LocalOpenAIProvider(
+                key="qwen",
+                base_url=settings.QWEN_BASE_URL,
+                model_name=settings.QWEN_MODEL_NAME,
+                api_key=settings.QWEN_API_KEY,
+            ),
+        }
+        # Semaphore shared across ALL local models (GPU protection)
+        self._sem = asyncio.Semaphore(settings.LLM_LOCAL_MAX_CONCURRENCY)
+        # Circuit breaker state for Gemini
+        self._gemini_cooldown_until: float = 0.0
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _gemini_in_cooldown(self) -> bool:
+        return time.monotonic() < self._gemini_cooldown_until
+
+    def _trip_gemini_circuit(self) -> None:
+        self._gemini_cooldown_until = time.monotonic() + settings.LLM_COOLDOWN_SECONDS
+        logger.warning(
+            f"Gemini circuit breaker tripped — skipping for {settings.LLM_COOLDOWN_SECONDS}s."
+        )
+
+    def _reset_gemini_circuit(self) -> None:
+        self._gemini_cooldown_until = 0.0
+
+    async def _call_gemini(self, prompt: str, system: str, max_tokens: int) -> str:
+        provider = get_llm_provider()  # existing singleton (GeminiProvider/Mock/Ollama)
+        try:
+            result = await provider.complete(prompt, system=system, max_tokens=max_tokens)
+            self._reset_gemini_circuit()
+            return result
+        except HTTPException as exc:
+            if exc.status_code in (429, 503) or (
+                isinstance(exc.detail, dict) and "RESOURCE_EXHAUSTED" in str(exc.detail)
+            ):
+                self._trip_gemini_circuit()
+            raise
+
+    async def _call_local(self, key: str, prompt: str, system: str, max_tokens: int) -> str:
+        lp = self._local.get(key)
+        if lp is None or not lp.available:
+            raise HTTPException(
+                status_code=503,
+                detail={"error_code": "LLM_NOT_CONFIGURED", "message": f"Model '{key}' is not configured."},
+            )
+        try:
+            async with self._sem:
+                return await lp.complete(prompt, system=system, max_tokens=max_tokens)
+        except asyncio.QueueEmpty:
+            raise HTTPException(
+                status_code=503,
+                detail={"error_code": "LLM_BUSY", "message": f"Local model '{key}' is busy. Please retry shortly."},
+            )
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        model: ModelKey = "auto",
+        system: str = "",
+        max_tokens: int = 1024,
+    ) -> dict:
+        """
+        Returns:
+            {
+                "text": str,
+                "model_used": str,
+                "fallback_used": bool,
+                "fallback_reason": Optional[str],
+            }
+        """
+        effective_model = model if model != "auto" else settings.LLM_DEFAULT_MODEL
+
+        # ---- Explicit model selection (no silent fallback) ----
+        if effective_model != "auto" and model != "auto":
+            if effective_model == "gemini":
+                text = await self._call_gemini(prompt, system, max_tokens)
+                return {"text": text, "model_used": "gemini", "fallback_used": False, "fallback_reason": None}
+            text = await self._call_local(effective_model, prompt, system, max_tokens)
+            return {"text": text, "model_used": effective_model, "fallback_used": False, "fallback_reason": None}
+
+        # ---- Auto mode: try primary, then fallback chain ----
+        fallback_order = [m.strip() for m in settings.LLM_FALLBACK_ORDER.split(",") if m.strip()]
+        chain = ([settings.LLM_DEFAULT_MODEL] if settings.LLM_DEFAULT_MODEL != "auto" else ["gemini"]) + fallback_order
+        last_exc: Optional[HTTPException] = None
+
+        for idx, candidate in enumerate(chain):
+            skip_reason: Optional[str] = None
+            if candidate == "gemini" and self._gemini_in_cooldown():
+                skip_reason = f"Gemini circuit open (cooldown active)"
+                logger.info(f"Auto-fallback: skipping Gemini ({skip_reason}).")
+                last_exc = HTTPException(
+                    status_code=429,
+                    detail={"error_code": "LLM_RATE_LIMITED", "message": skip_reason},
+                )
+                continue
+
+            try:
+                if candidate == "gemini":
+                    text = await self._call_gemini(prompt, system, max_tokens)
+                else:
+                    lp = self._local.get(candidate)
+                    if lp is None or not lp.available:
+                        logger.info(f"Auto-fallback: skipping '{candidate}' (not configured).")
+                        last_exc = HTTPException(
+                            status_code=503,
+                            detail={"error_code": "LLM_NOT_CONFIGURED", "message": f"'{candidate}' not configured."},
+                        )
+                        continue
+                    text = await self._call_local(candidate, prompt, system, max_tokens)
+
+                is_fallback = idx > 0 or (candidate == "gemini" and self._gemini_in_cooldown())
+                reason = None
+                if idx > 0 and last_exc:
+                    detail = last_exc.detail if isinstance(last_exc.detail, dict) else {}
+                    reason = detail.get("message", f"Primary model failed (status {last_exc.status_code})")
+                return {
+                    "text": text,
+                    "model_used": candidate,
+                    "fallback_used": idx > 0,
+                    "fallback_reason": reason,
+                }
+
+            except HTTPException as exc:
+                if _is_fallback_eligible(exc):
+                    detail = exc.detail if isinstance(exc.detail, dict) else {}
+                    logger.warning(
+                        f"LLMRouter: '{candidate}' failed ({exc.status_code} / "
+                        f"{detail.get('error_code', '?')}), trying next model."
+                    )
+                    last_exc = exc
+                    continue
+                # Non-transient error (e.g. 400 bad request) — propagate immediately
+                raise
+
+        # All candidates exhausted
+        detail = last_exc.detail if (last_exc and isinstance(last_exc.detail, dict)) else {}
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error_code": "LLM_ALL_FAILED",
+                "message": "All LLM models are currently unavailable. Please try again shortly.",
+                "last_error": detail.get("message", str(last_exc)),
+            },
+        )
+
+    def model_status(self) -> list[dict]:
+        """
+        Return a list of model availability records (cached snapshot — no live ping).
+        Used by GET /api/models.
+        """
+        provider = get_llm_provider()
+        gemini_ok = isinstance(provider, GeminiProvider) and not self._gemini_in_cooldown()
+        records = [
+            {
+                "key": "gemini",
+                "label": "Gemini (Google)",
+                "available": gemini_ok,
+                "reason": "Circuit breaker active (rate limited)" if (isinstance(provider, GeminiProvider) and self._gemini_in_cooldown()) else (
+                    "Not configured" if not isinstance(provider, GeminiProvider) else None
+                ),
+            }
+        ]
+        for key, lp in self._local.items():
+            records.append({
+                "key": key,
+                "label": "Gemma 4" if key == "gemma4" else "Qwen",
+                "available": lp.available,
+                "reason": None if lp.available else "Not configured (set BASE_URL and MODEL_NAME in .env)",
+            })
+        return records
+
+
+# Module-level singleton for LLMRouter
+_llm_router: Optional[LLMRouter] = None
+
+
+def get_llm_router() -> LLMRouter:
+    """Return (and lazily create) the module-level LLMRouter singleton."""
+    global _llm_router
+    if _llm_router is None:
+        _llm_router = LLMRouter()
+    return _llm_router
 
 
 # ---------------------------------------------------------------------------

@@ -196,10 +196,28 @@ function App() {
   // Pending attachment state (shared across chat pages)
   const [pendingFile, setPendingFile] = useState(null); // { file, document_id, name, status }
 
+  // Model selector state
+  const [selectedModel, setSelectedModel] = useState(
+    () => localStorage.getItem('bis-model') || 'auto'
+  );
+  const [availableModels, setAvailableModels] = useState([]);
+
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark);
     localStorage.setItem('bis-theme', dark ? 'dark' : 'light');
   }, [dark]);
+
+  // Fetch available models on mount (for selector UI)
+  useEffect(() => {
+    apiFetch('/api/models')
+      .then(data => setAvailableModels(data.models || []))
+      .catch(() => {}); // silently ignore — selector degrades gracefully
+  }, []);
+
+  // Persist model selection
+  useEffect(() => {
+    localStorage.setItem('bis-model', selectedModel);
+  }, [selectedModel]);
 
   const fetchSessions = useCallback(async () => {
     try {
@@ -271,6 +289,7 @@ function App() {
         use_rag: true,
         n_results: 5,
         style: styleMap[mode] || 'simple',
+        model: selectedModel || 'auto',
       };
 
       const data = await apiFetch('/api/chat', {
@@ -291,6 +310,9 @@ function App() {
               sources: data.sources || [],
               relevance: typeof data.relevance === 'number' ? data.relevance : data.confidence,
               intent: data.intent,
+              modelUsed: data.model_used || null,
+              fallbackUsed: data.fallback_used || false,
+              fallbackReason: data.fallback_reason || null,
             }
           : msg
       ));
@@ -313,7 +335,7 @@ function App() {
     } finally {
       setIsLoading(false);
     }
-  }, [query, isLoading, pendingFile, activeSessionId, mode, fetchSessions]);
+  }, [query, isLoading, pendingFile, activeSessionId, mode, fetchSessions, selectedModel]);
 
   const newChat = useCallback(() => {
     setMessages([]);
@@ -435,6 +457,9 @@ function App() {
               pendingFile={pendingFile}
               setPendingFile={setPendingFile}
               isLoading={isLoading}
+              selectedModel={selectedModel}
+              setSelectedModel={setSelectedModel}
+              availableModels={availableModels}
             />
           )}
 
@@ -1101,10 +1126,21 @@ function Home({ query, setQuery, send, nav, pendingFile, setPendingFile, isLoadi
 // Chat page
 // ─────────────────────────────────────────────────────────────────────────────
 
-function Chat({ messages, query, setQuery, send, mode, setMode, retry, pendingFile, setPendingFile, isLoading }) {
+function Chat({ messages, query, setQuery, send, mode, setMode, retry, pendingFile, setPendingFile, isLoading,
+               selectedModel, setSelectedModel, availableModels }) {
   const messagesEndRef = useRef(null);
   const messagesContainerRef = useRef(null);
   const [userScrolled, setUserScrolled] = useState(false);
+
+  // Model label helper
+  const MODEL_LABELS = { auto: 'Auto', gemini: 'Gemini', gemma4: 'Gemma 4', qwen: 'Qwen' };
+
+  const modelAvailMap = Object.fromEntries((availableModels || []).map(m => [m.key, m.available]));
+  const isModelDisabled = (key) => {
+    if (key === 'auto') return false; // auto is always available
+    if (!availableModels.length) return false; // still loading
+    return modelAvailMap[key] === false;
+  };
 
   // Auto-scroll to bottom when new messages arrive, unless user scrolled up
   useEffect(() => {
@@ -1158,6 +1194,22 @@ function Chat({ messages, query, setQuery, send, mode, setMode, retry, pendingFi
             </button>
           ))}
         </div>
+        {setSelectedModel && (
+          <div className="model-selector" title="Select AI model">
+            <select
+              value={selectedModel || 'auto'}
+              onChange={e => setSelectedModel(e.target.value)}
+              disabled={isLoading}
+              aria-label="AI model"
+            >
+              {['auto', 'gemini', 'gemma4', 'qwen'].map(key => (
+                <option key={key} value={key} disabled={isModelDisabled(key)}>
+                  {MODEL_LABELS[key]}{isModelDisabled(key) ? ' (unavailable)' : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       <div
@@ -1282,6 +1334,15 @@ function MessageBubble({ message: m, onCopy, onRetry }) {
         {m.role === 'assistant' && !m.loading && typeof m.relevance === 'number' && (
           <div className="confidence">
             Relevance: {Math.round(m.relevance * 100)}%
+          </div>
+        )}
+
+        {m.role === 'assistant' && !m.loading && m.modelUsed && (
+          <div className={`model-attribution ${m.fallbackUsed ? 'fallback' : ''}`}
+               title={m.fallbackReason || `Answered by ${m.modelUsed}`}>
+            {m.fallbackUsed
+              ? `↩ Fallback: ${m.modelUsed}`
+              : `⚡ ${m.modelUsed}`}
           </div>
         )}
       </div>

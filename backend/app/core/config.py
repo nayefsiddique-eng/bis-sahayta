@@ -37,6 +37,19 @@ class Settings(BaseSettings):
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "llama3"
 
+    # Multi-model LLM routing (Gemma 4 + Qwen fallback)
+    LLM_DEFAULT_MODEL: str = "gemini"          # auto | gemini | gemma4 | qwen
+    LLM_FALLBACK_ORDER: str = "gemma4,qwen"    # comma-separated fallback chain
+    LLM_REQUEST_TIMEOUT_SECONDS: int = 30      # local model HTTP timeout
+    LLM_LOCAL_MAX_CONCURRENCY: int = 2         # GPU semaphore (local models only)
+    LLM_COOLDOWN_SECONDS: int = 60             # skip Gemini after 429 for N seconds
+    GEMMA4_BASE_URL: str = "http://localhost:11434/v1"  # OpenAI-compatible endpoint
+    GEMMA4_MODEL_NAME: str = "gemma3:4b"
+    GEMMA4_API_KEY: str = ""                   # leave blank for unauthenticated local
+    QWEN_BASE_URL: str = "http://localhost:11434/v1"
+    QWEN_MODEL_NAME: str = "qwen2.5:7b"
+    QWEN_API_KEY: str = ""
+
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
     CACHE_TTL_SECONDS: int = 300

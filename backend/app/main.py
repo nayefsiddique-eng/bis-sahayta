@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import query, compliance, translate, voice, standards, feedback
 from app.routers import chat, documents, flashcards, certification, tasks
+from app.routers import models as models_router
 from app.routers.chat import sessions_router
 from app.core.exceptions import (
     APIException,
@@ -68,6 +69,8 @@ app.include_router(flashcards.router)
 app.include_router(flashcards.router, prefix="/api", include_in_schema=False)
 app.include_router(certification.router)
 app.include_router(tasks.router)
+app.include_router(models_router.router)
+app.include_router(models_router.router, prefix="/api", include_in_schema=False)
 
 
 # -- Health & Readiness
