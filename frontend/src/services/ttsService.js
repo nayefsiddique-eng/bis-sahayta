@@ -202,6 +202,9 @@ class TTSService {
   loadVoices() {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
     this.voices = window.speechSynthesis.getVoices() || [];
+    if (this.onVoicesUpdated && typeof this.onVoicesUpdated === 'function') {
+      this.onVoicesUpdated(this.voices);
+    }
   }
 
   getAvailableVoices() {
@@ -230,25 +233,12 @@ class TTSService {
       if (match) return match;
     }
 
-    // 3. Indian English or Regional voice fallback
-    const indianFallback = voices.find(v => v.lang && v.lang.toLowerCase().includes('in'));
-    if (indianFallback) return indianFallback;
-
-    // 4. Default voice
-    return voices.find(v => v.default) || voices[0] || null;
+    // Return null if no matching language voice exists — avoid reading Indic script with English voice
+    return null;
   }
 
   hasMatchingVoice(langKey) {
-    const voices = this.getAvailableVoices();
-    if (!voices.length) return false;
-    const targetLocales = LOCALE_PRIORITIES[langKey] || LOCALE_PRIORITIES.en;
-    for (const locale of targetLocales) {
-      const prefix = locale.split('-')[0].toLowerCase();
-      if (voices.some(v => v.lang && (v.lang.toLowerCase() === locale.toLowerCase() || v.lang.toLowerCase().startsWith(prefix)))) {
-        return true;
-      }
-    }
-    return false;
+    return this.selectVoice(langKey) !== null;
   }
 
   setState(state) {

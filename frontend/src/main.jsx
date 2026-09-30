@@ -991,6 +991,7 @@ import { ttsService } from './services/ttsService';
 
 function ListenButton({ text, messageId, lang }) {
   const [ttsState, setTtsState] = useState('idle');
+  const [voicesLoaded, setVoicesLoaded] = useState(false);
   const idRef = useRef(messageId || Math.random().toString());
 
   useEffect(() => {
@@ -1002,6 +1003,7 @@ function ListenButton({ text, messageId, lang }) {
       }
     };
     ttsService.onStateChange = handleStateChange;
+    ttsService.onVoicesUpdated = () => setVoicesLoaded(prev => !prev);
     return () => {
       if (ttsService.activeMessageId === idRef.current) {
         ttsService.stop();
@@ -1038,10 +1040,11 @@ function ListenButton({ text, messageId, lang }) {
     <div className="listen-btn-group" style={{ display: 'inline-flex', gap: '4px', alignItems: 'center' }}>
       <button
         onClick={handleListen}
-        disabled={!isSupported}
+        disabled={!isSupported || !hasVoice}
+        style={{ opacity: !hasVoice ? 0.5 : 1, cursor: !hasVoice ? 'not-allowed' : 'pointer' }}
         title={
           !hasVoice
-            ? `No native ${targetLang.toUpperCase()} voice installed on device (using default voice)`
+            ? `No native ${targetLang.toUpperCase()} voice installed on this device`
             : isSpeakingThis
             ? 'Pause speaking'
             : isPausedThis
