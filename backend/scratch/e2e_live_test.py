@@ -42,6 +42,11 @@ def req(method, path, data=None, is_json=True, custom_headers=None):
     except urllib.error.HTTPError as e:
         duration = round(time.time() - start, 3)
         res_body = e.read().decode("utf-8", errors="replace")
+        if e.code == 429:
+            retry_after = int(e.headers.get("Retry-After", "5"))
+            print(f"    [Rate Limited 429] Waiting {retry_after}s for quota reset...")
+            time.sleep(retry_after)
+            return req(method, path, data, is_json, custom_headers)
         try:
             res_json = json.loads(res_body)
         except:

@@ -61,10 +61,14 @@ class RequestTracingAndAuthMiddleware(BaseHTTPMiddleware):
                     )
 
             # 3. Rate Limiting (Step 4)
-            if not is_public and path in ["/compliance/check", "/translate/text", "/voice/stream"]:
-                client_ip = request.client.host if request.client else "unknown"
-                rate_limit_key = f"{request.headers.get('X-API-Key', client_ip)}:{path}"
-                rate_limiter.check_rate_limit(rate_limit_key)
+            if not is_public:
+                # Check path or stripped path without /api
+                norm_path = path[4:] if path.startswith("/api/") else path
+                rate_limited_paths = {"/chat", "/compliance/check", "/translate/text", "/voice/stream", "/documents/upload", "/flashcards/generate"}
+                if norm_path in rate_limited_paths or path in rate_limited_paths:
+                    client_ip = request.client.host if request.client else "unknown"
+                    rate_limit_key = f"{request.headers.get('X-API-Key', client_ip)}:{norm_path}"
+                    rate_limiter.check_rate_limit(rate_limit_key)
 
             response = await call_next(request)
             response.headers["X-Request-ID"] = request_id

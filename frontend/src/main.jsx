@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import {
   Search, Plus, Sun, Moon, Settings, History, Compass, Paperclip, Mic, MicOff,
   Send, Menu, X, ChevronRight, ArrowLeft, Bookmark, MessageSquare, Trash2,
-  CheckCircle2, Volume2, VolumeX, Copy, FileText, AlertCircle, Loader2
+  CheckCircle2, Volume2, VolumeX, Copy, FileText, AlertCircle, Loader2, Camera
 } from 'lucide-react';
 import './styles.css';
 import bisLogo from "./assets/bis.png";
@@ -721,6 +721,174 @@ function AttachButton({ pendingFile, setPendingFile, disabled }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Live Camera Capture Modal & OCR
+// ─────────────────────────────────────────────────────────────────────────────
+
+function CameraButton({ setPendingFile, disabled }) {
+  const [active, setActive] = useState(false);
+  const [stream, setStream] = useState(null);
+  const [capturedBlob, setCapturedBlob] = useState(null);
+  const [capturedPreview, setCapturedPreview] = useState(null);
+  const [processing, setProcessing] = useState(false);
+  const [error, setError] = useState(null);
+
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+
+  const startCamera = async () => {
+    setError(null);
+    setCapturedBlob(null);
+    setCapturedPreview(null);
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setError('Camera access is not supported in this browser.');
+      return;
+    }
+    try {
+      const mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+      });
+      setStream(mediaStream);
+      setActive(true);
+    } catch (err) {
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        setError('Camera permission denied. Please allow camera access in browser settings.');
+      } else {
+        setError(`Camera error: ${err.message || err.name}`);
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (active && stream && videoRef.current) {
+      videoRef.current.srcObject = stream;
+      videoRef.current.play().catch(console.error);
+    }
+  }, [active, stream]);
+
+  const stopCamera = useCallback(() => {
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+      setStream(null);
+    }
+    setActive(false);
+  }, [stream]);
+
+  const captureFrame = () => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 480;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      setCapturedBlob(blob);
+      setCapturedPreview(canvas.toDataURL('image/jpeg'));
+    }, 'image/jpeg', 0.9);
+  };
+
+  const confirmUpload = async () => {
+    if (!capturedBlob) return;
+    setProcessing(true);
+    setError(null);
+    try {
+      const file = new File([capturedBlob], `camera-scan-${Date.now()}.jpg`, { type: 'image/jpeg' });
+      setPendingFile({ file, name: file.name, status: 'uploading', document_id: null });
+
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('lang', 'eng');
+
+      const data = await apiFetch('/api/documents/upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      setPendingFile({
+        file,
+        name: file.name,
+        status: 'ready',
+        document_id: data.document_id,
+        preview: data.extracted_text_preview || '',
+      });
+
+      stopCamera();
+    } catch (err) {
+      setError(`OCR failed: ${err.message}`);
+      setPendingFile(null);
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  return (
+    <div className="camera-container">
+      <button
+        className="mini camera-btn"
+        onClick={startCamera}
+        disabled={disabled}
+        title="Capture document with live camera"
+      >
+        <Camera size={17} />
+        Scan
+      </button>
+
+      {error && !active && (
+        <div className="attach-error">
+          <AlertCircle size={12} />
+          {error}
+          <button className="voice-error-close" onClick={() => setError(null)}>×</button>
+        </div>
+      )}
+
+      {active && (
+        <div className="camera-modal-backdrop">
+          <div className="camera-modal">
+            <div className="camera-modal-header">
+              <h3>Camera Document Scan</h3>
+              <button className="file-pill-remove" onClick={stopCamera}>×</button>
+            </div>
+
+            {error && <div className="attach-error"><AlertCircle size={12} />{error}</div>}
+
+            <div className="camera-viewport">
+              {!capturedPreview ? (
+                <video ref={videoRef} playsInline autoPlay muted />
+              ) : (
+                <img src={capturedPreview} alt="Captured Document" />
+              )}
+              <canvas ref={canvasRef} style={{ display: 'none' }} />
+            </div>
+
+            <div className="camera-modal-actions">
+              {!capturedPreview ? (
+                <button className="mini" onClick={captureFrame}>
+                  <Camera size={15} /> Capture Photo
+                </button>
+              ) : (
+                <>
+                  <button className="mini" onClick={() => setCapturedPreview(null)} disabled={processing}>
+                    Retake
+                  </button>
+                  <button className="mini send" onClick={confirmUpload} disabled={processing}>
+                    {processing ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}
+                    {processing ? 'Processing OCR…' : 'Process OCR & Attach'}
+                  </button>
+                </>
+              )}
+              <button className="mini" onClick={stopCamera} disabled={processing}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Composer
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -764,6 +932,10 @@ function Composer({ query, setQuery, send, pendingFile, setPendingFile, isLoadin
         <div className="composer-tools">
           <AttachButton
             pendingFile={pendingFile}
+            setPendingFile={setPendingFile}
+            disabled={isLoading}
+          />
+          <CameraButton
             setPendingFile={setPendingFile}
             disabled={isLoading}
           />

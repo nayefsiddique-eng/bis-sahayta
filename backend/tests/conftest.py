@@ -41,6 +41,10 @@ def isolate_env(tmp_path):
     from app.routers import feedback
     reload(feedback)
 
+    # Reset RateLimiter store so tests are isolated from rate limiting
+    from app.core.rate_limiter import rate_limiter
+    rate_limiter._store.clear()
+
     yield
 
     # Teardown: clean up environment variables
