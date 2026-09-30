@@ -238,6 +238,19 @@ class TTSService {
     return voices.find(v => v.default) || voices[0] || null;
   }
 
+  hasMatchingVoice(langKey) {
+    const voices = this.getAvailableVoices();
+    if (!voices.length) return false;
+    const targetLocales = LOCALE_PRIORITIES[langKey] || LOCALE_PRIORITIES.en;
+    for (const locale of targetLocales) {
+      const prefix = locale.split('-')[0].toLowerCase();
+      if (voices.some(v => v.lang && (v.lang.toLowerCase() === locale.toLowerCase() || v.lang.toLowerCase().startsWith(prefix)))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   setState(state) {
     this.speakingState = state;
     if (typeof this.onStateChange === 'function') {

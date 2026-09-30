@@ -310,6 +310,7 @@ function App() {
               sources: data.sources || [],
               relevance: typeof data.relevance === 'number' ? data.relevance : data.confidence,
               intent: data.intent,
+              responseLang: data.response_lang || 'en',
               modelUsed: data.model_used || null,
               fallbackUsed: data.fallback_used || false,
               fallbackReason: data.fallback_reason || null,
@@ -988,7 +989,7 @@ import { ttsService } from './services/ttsService';
 // TTS Listen button
 // ─────────────────────────────────────────────────────────────────────────────
 
-function ListenButton({ text, messageId }) {
+function ListenButton({ text, messageId, lang }) {
   const [ttsState, setTtsState] = useState('idle');
   const idRef = useRef(messageId || Math.random().toString());
 
@@ -1019,7 +1020,7 @@ function ListenButton({ text, messageId }) {
     } else if (isPausedThis) {
       ttsService.resume();
     } else {
-      ttsService.speak(text, idRef.current, () => setTtsState('idle'));
+      ttsService.speak(text, idRef.current, () => setTtsState('idle'), lang);
     }
   };
 
@@ -1030,6 +1031,8 @@ function ListenButton({ text, messageId }) {
   };
 
   const isSupported = typeof window !== 'undefined' && 'speechSynthesis' in window;
+  const targetLang = lang || detectLanguage(text);
+  const hasVoice = isSupported && ttsService.hasMatchingVoice(targetLang);
 
   return (
     <div className="listen-btn-group" style={{ display: 'inline-flex', gap: '4px', alignItems: 'center' }}>
@@ -1037,7 +1040,9 @@ function ListenButton({ text, messageId }) {
         onClick={handleListen}
         disabled={!isSupported}
         title={
-          isSpeakingThis
+          !hasVoice
+            ? `No native ${targetLang.toUpperCase()} voice installed on device (using default voice)`
+            : isSpeakingThis
             ? 'Pause speaking'
             : isPausedThis
             ? 'Resume speaking'
@@ -1310,7 +1315,11 @@ function MessageBubble({ message: m, onCopy, onRetry }) {
             <button onClick={handleCopy}>
               <Copy size={14} />{copied ? 'Copied!' : 'Copy'}
             </button>
-            <ListenButton text={m.text} messageId={m.id || m.timestamp || m.text?.slice(0, 20)} />
+            <ListenButton
+              text={m.text}
+              messageId={m.id || m.timestamp || m.text?.slice(0, 20)}
+              lang={m.responseLang || m.lang}
+            />
           </div>
         )}
 
