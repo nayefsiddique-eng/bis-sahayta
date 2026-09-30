@@ -9,7 +9,7 @@
  *  - Single Active Playback Queue with Play, Pause, Resume, Stop controls
  */
 
-// Language to Locale priorities
+// Language to Locale priorities (12 Indian languages + English)
 const LOCALE_PRIORITIES = {
   hi: ['hi-IN', 'hi'],
   te: ['te-IN', 'te'],
@@ -18,8 +18,11 @@ const LOCALE_PRIORITIES = {
   ta: ['ta-IN', 'ta-LK', 'ta'],
   kn: ['kn-IN', 'kn'],
   ml: ['ml-IN', 'ml'],
-  mr: ['mr-IN', 'mr'],
+  mr: ['mr-IN', 'mr', 'hi-IN'],
   gu: ['gu-IN', 'gu'],
+  or: ['or-IN', 'or'],
+  pa: ['pa-IN', 'pa-PK', 'pa'],
+  as: ['as-IN', 'as', 'bn-IN'],
   en: ['en-IN', 'en-US', 'en-GB', 'en'],
 };
 
@@ -34,11 +37,14 @@ const RATE_SETTINGS = {
   ml: 0.92,
   mr: 0.92,
   gu: 0.92,
+  or: 0.92,
+  pa: 0.92,
+  as: 0.92,
   en: 0.98,
 };
 
 /**
- * 1. Language Detection via Script Unicode Ranges
+ * 1. Language Detection via Script Unicode Ranges (12 Indian Languages)
  */
 export function detectLanguage(text) {
   if (!text || typeof text !== 'string') return 'en';
@@ -51,15 +57,21 @@ export function detectLanguage(text) {
   let knCount = 0;
   let mlCount = 0;
   let guCount = 0;
+  let orCount = 0;
+  let paCount = 0;
 
   for (let i = 0; i < text.length; i++) {
     const code = text.charCodeAt(i);
     // Devanagari (Hindi / Marathi) - 0x0900 to 0x097F
     if (code >= 0x0900 && code <= 0x097f) hiCount++;
-    // Bengali - 0x0980 to 0x09FF
-    else if (code >= 0x0980 && code <= 0x09ff) bnCount++;
+    // Gurmukhi / Punjabi - 0x0A00 to 0x0A7F
+    else if (code >= 0x0a00 && code <= 0x0a7f) paCount++;
     // Gujarati - 0x0A80 to 0x0AFF
     else if (code >= 0x0a80 && code <= 0x0aff) guCount++;
+    // Bengali / Assamese - 0x0980 to 0x09FF
+    else if (code >= 0x0980 && code <= 0x09ff) bnCount++;
+    // Odia - 0x0B00 to 0x0B7F
+    else if (code >= 0x0b00 && code <= 0x0b7f) orCount++;
     // Tamil - 0x0B80 to 0x0BFF
     else if (code >= 0x0b80 && code <= 0x0bff) taCount++;
     // Telugu - 0x0C00 to 0x0C7F
@@ -81,6 +93,8 @@ export function detectLanguage(text) {
     { lang: 'kn', count: knCount },
     { lang: 'ml', count: mlCount },
     { lang: 'gu', count: guCount },
+    { lang: 'or', count: orCount },
+    { lang: 'pa', count: paCount },
   ];
 
   counts.sort((a, b) => b.count - a.count);
